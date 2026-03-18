@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # Streamlit Frontend: The UI for medical personnel
+  frontend:
+    build:
+      context: ./frontend_app
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      # Central entry point for all API requests
+      - BACKEND_URL=http://load-balancer:8000
+    depends_on:
+      - load-balancer
+    networks:
+      - glaucoma-net
+
+  # L7 Resource-Aware Load Balancer (Nginx)
+  load-balancer:
+    image: nginx:latest
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ai-worker-cpu
+      - ai-worker-gpu
+    networks:
+      - glaucoma-net
+
+  # Standard node for smaller fundus images (CPU-based)
+  ai-worker-cpu:
+    build:
+      context: ./ai_worker
+      dockerfile: Dockerfile
+    environment:
+      - NODE_TYPE=Standard CPU
+      - MODEL_DIR=/app/models
+    volumes:
+      - ./models:/app/models
+    networks:
+      - glaucoma-net
+
+  # High-performance node for heavy, high-res images (Simulating GPU)
+  ai-worker-gpu:
+    build:
+      context: ./ai_worker
+      dockerfile: Dockerfile
+    environment:
+      - NODE_TYPE=High-Performance GPU
+      - MODEL_DIR=/app/models
+    volumes:
+      - ./models:/app/models
+    networks:
+      - glaucoma-net
+
+networks:
+  glaucoma-net:
+    driver: bridge

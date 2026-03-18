@@ -1,0 +1,28 @@
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and editor settings (VS Code, PyCharm, etc.)
+.vscode/
+.idea/
+
+# Environment variables and secrets (NEVER commit this file to a public repository)
+.env
+
+# Application logs
+*.log
+
+# Deep Learning model weights
+# These files are typically too large for standard Git repositories.
+# Consider using Git LFS (Large File Storage) or downloading them from cloud storage (S3) at runtime.
+models/*.h5
+models/*.keras
+models/*.pb
+models/variables/
+models/assets/

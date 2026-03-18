@@ -1,0 +1,17 @@
+# Core FastAPI framework and ASGI server for the microservice
+fastapi
+uvicorn
+
+# Required by FastAPI for handling multipart/form-data (image uploads)
+python-multipart
+
+# Machine Learning framework 
+# (Note: use 'tensorflow-cpu' instead of 'tensorflow' if this specific 
+# container will only run on CPU nodes, as it significantly reduces image size)
+tensorflow
+
+# Image processing library for reading and resizing medical images
+Pillow
+
+# Fundamental package for scientific computing and array operations
+numpy
