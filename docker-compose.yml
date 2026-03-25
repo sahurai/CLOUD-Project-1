@@ -4,7 +4,7 @@ services:
   # Streamlit Frontend: The UI for medical personnel
   frontend:
     build:
-      context: ./frontend_app
+      context: ./cloud_frontend_app
       dockerfile: Dockerfile
     ports:
       - "8501:8501"
@@ -32,7 +32,7 @@ services:
   # Standard node for smaller fundus images (CPU-based)
   ai-worker-cpu:
     build:
-      context: ./ai_worker
+      context: ./cloud_ai_worker
       dockerfile: Dockerfile
     environment:
       - NODE_TYPE=Standard CPU
@@ -45,7 +45,7 @@ services:
   # High-performance node for heavy, high-res images (Simulating GPU)
   ai-worker-gpu:
     build:
-      context: ./ai_worker
+      context: ./cloud_ai_worker
       dockerfile: Dockerfile
     environment:
       - NODE_TYPE=High-Performance GPU
