@@ -10,19 +10,23 @@ services:
       - "8501:8501"
     environment:
       # Central entry point for all API requests
-      - BACKEND_URL=http://load-balancer:8000
+      - BACKEND_URL=http://load-balancer:8080
     depends_on:
       - load-balancer
     networks:
       - glaucoma-net
 
-  # L7 Resource-Aware Load Balancer (Nginx)
+  # L7 Resource-Aware Load Balancer (Go)
   load-balancer:
-    image: nginx:latest
+    build:
+      context: ./load_balancer
+      dockerfile: Dockerfile
     ports:
-      - "8000:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - "8000:8080"
+    environment:
+      - CPU_BACKEND=http://ai-worker-cpu:8001
+      - GPU_BACKEND=http://ai-worker-gpu:8001
+      - SIZE_THRESHOLD=2500000
     depends_on:
       - ai-worker-cpu
       - ai-worker-gpu
