@@ -124,10 +124,5 @@ Each request logs the method, path, byte size, and routing target:
 [route] GET /models/ -> CPU
 ```
 
-## Cloud Features & Scalability
-* **Kubernetes Orchestration:** Manages container lifecycles and provides service discovery.
-* **Horizontal Pod Autoscaler (HPA):** The deployments are prepared for autoscaling. See the [k8s README](k8s/README.md) for setup notes.
-* **Infrastructure Telemetry:** Each diagnostic report includes metadata (Node Type, Worker ID) to verify real-time resource allocation and cluster state.
-
 ## Model Storage Policy
 To maintain a lightweight repository, large model weight files are excluded from Git. In production, these are delivered to the AI Workers via **Persistent Volumes (PV)** or cloud-based object storage during the container initialization phase.

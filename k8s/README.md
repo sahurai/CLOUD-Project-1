@@ -74,11 +74,3 @@ kubectl -n glaucoma port-forward svc/load-balancer 8000:8080 &
 # Run the test script against the forwarded port
 ./test_load_balancer.sh http://localhost:8000
 ```
-
-## Notes for Autoscaling
-
-The deployments use standard labels (`app: ai-worker-cpu`, etc.) and single-replica baselines. To add HPA, create `HorizontalPodAutoscaler` resources targeting these deployments. The [metrics-server](https://github.com/kubernetes-sigs/metrics-server) addon is required:
-
-```bash
-minikube addons enable metrics-server
-```
