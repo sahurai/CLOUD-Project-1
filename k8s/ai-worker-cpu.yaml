@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-worker-cpu
+  namespace: glaucoma
+  labels:
+    app: ai-worker-cpu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-worker-cpu
+  template:
+    metadata:
+      labels:
+        app: ai-worker-cpu
+    spec:
+      containers:
+        - name: ai-worker
+          image: glaucoma/ai-worker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+          env:
+            - name: NODE_TYPE
+              value: "Standard CPU"
+            - name: MODEL_DIR
+              value: /app/models
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+              readOnly: true
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-worker-cpu
+  namespace: glaucoma
+spec:
+  selector:
+    app: ai-worker-cpu
+  ports:
+    - port: 8001
+      targetPort: 8001

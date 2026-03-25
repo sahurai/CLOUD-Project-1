@@ -34,8 +34,8 @@ func main() {
 		log.Fatalf("invalid GPU_BACKEND url: %v", err)
 	}
 
-	cpuProxy := httputil.NewSingleHostReverseProxy(cpuURL)
-	gpuProxy := httputil.NewSingleHostReverseProxy(gpuURL)
+	cpuProxy := newProxy(cpuURL)
+	gpuProxy := newProxy(gpuURL)
 
 	mux := http.NewServeMux()
 
@@ -66,6 +66,18 @@ func main() {
 	log.Printf("load-balancer listening on %s  (threshold=%d bytes, cpu=%s, gpu=%s)",
 		addr, threshold, cpuAddr, gpuAddr)
 	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// newProxy creates a reverse proxy that correctly sets the Host header
+// and preserves the original request path and body untouched.
+func newProxy(target *url.URL) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		originalDirector(r)
+		r.Host = target.Host
+	}
+	return proxy
 }
 
 func envOrDefault(key, fallback string) string {
