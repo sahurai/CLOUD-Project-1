@@ -7,6 +7,7 @@ spec:
     storage: 1Gi
   accessModes:
     - ReadOnlyMany
+  storageClassName: ""
   hostPath:
     path: /data/models
 ---
@@ -18,6 +19,8 @@ metadata:
 spec:
   accessModes:
     - ReadOnlyMany
+  storageClassName: ""
+  volumeName: models-pv
   resources:
     requests:
       storage: 1Gi
