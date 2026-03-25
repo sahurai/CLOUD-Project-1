@@ -1,63 +1,133 @@
-# 👁️ Glaucoma Detection Cloud Ecosystem
+# Glaucoma Detection Cloud Ecosystem
 
-**Project Authors:** Ilia Sukhina, Yevhenii Severin & Adam Partl  
+**Project Authors:** Ilia Sukhina, Yevhenii Severin & Adam Partl
 
-## 📌 Project Overview
+## Project Overview
 The primary objective of this project is to provide a scalable, cloud-native solution for the early diagnosis of glaucoma. By leveraging Deep Learning (CNN) and high-performance cloud infrastructure, the system enables medical professionals to perform rapid screenings using retinal fundus photographs.
 
-## 🏗️ System Architecture
+## System Architecture
 The application is built using a **microservices architecture**, designed for high availability and elastic scaling within a **Kubernetes** environment.
 
-### Core Microservices:
+### Core Microservices
 | Component | Technology | Role |
 | :--- | :--- | :--- |
 | **Frontend** | Streamlit | Web-based diagnostic dashboard for medical personnel. |
-| **L7 Load Balancer** | Nginx | "Resource-Aware" gateway that routes traffic based on image complexity. |
+| **L7 Load Balancer** | Go | Resource-aware reverse proxy that routes traffic based on image size. See [`load_balancer/README.md`](load_balancer/README.md). |
 | **AI Worker (CPU)** | FastAPI / TF | Processes standard images on high-throughput, cost-effective nodes. |
 | **AI Worker (GPU)** | FastAPI / TF | Handles high-resolution images on nodes with hardware acceleration. |
 
-## 📁 Repository Structure
+## Repository Structure
 ```text
 .
 ├── docker-compose.yml         # Local orchestration for all services
-├── nginx.conf                 # L7 Smart Routing configuration
+├── test_load_balancer.sh      # Automated routing verification script
 │
-├── frontend_app/              # Streamlit Web Application
-│   ├── app.py                 # UI Logic & API client
-│   ├── Dockerfile             # Frontend container build
+├── load_balancer/             # Go L7 Resource-Aware Load Balancer
+│   ├── main.go                # Reverse proxy with Content-Length routing
+│   ├── Dockerfile             # Multi-stage Alpine build
+│   └── README.md              # Load balancer documentation
+│
+├── k8s/                       # Kubernetes manifests (minikube)
+│   ├── deploy.sh              # Build & deploy helper script
+│   ├── namespace.yaml
+│   ├── models-pv.yaml         # PersistentVolume for model files
+│   ├── ai-worker-cpu.yaml
+│   ├── ai-worker-gpu.yaml
+│   ├── load-balancer.yaml
+│   ├── frontend.yaml
+│   └── README.md              # K8s deployment guide
+│
+├── cloud_frontend_app/        # Streamlit Web Application
+│   ├── app.py                 # UI logic & API client
+│   ├── Dockerfile
 │   └── requirements.txt
 │
-└── ai_worker/                 # AI Inference Microservice
-    ├── models/                # (Local) Directory for AI weights (.h5/.keras)
-    ├── main.py                # FastAPI endpoints & CNN logic
-    ├── Dockerfile             # Inference container build
-    └── requirements.txt
+├── cloud_ai_worker/           # AI Inference Microservice
+│   ├── main.py                # FastAPI endpoints & CNN logic
+│   ├── Dockerfile
+│   └── requirements.txt
+│
+└── models/                    # (git-ignored) AI model weights (.h5/.keras)
 ```
 
-## 🧠 Resource-Aware Routing Logic
-To ensure system stability and prevent **Out-of-Memory (OOM)** errors, we implemented a custom L7 routing logic:
-* **Small/Standard Files:** Directed to standard CPU nodes.
-* **Large/High-Res Files:** Automatically routed to High-Performance GPU nodes.
-* **Mechanism:** The Nginx Load Balancer analyzes the `Content-Length` header of incoming requests to determine the appropriate processing target.
+## Resource-Aware Routing Logic
+To ensure system stability and prevent **Out-of-Memory (OOM)** errors, the Go load balancer inspects the `Content-Length` header of each request:
 
-## 📈 Cloud Features & Scalability
-* **Kubernetes Orchestration:** Manages container lifecycles and provides service discovery.
-* **Horizontal Pod Autoscaler (HPA):** The system is configured to launch additional AI Worker instances automatically when CPU utilization exceeds **80%**.
-* **Infrastructure Telemetry:** Each diagnostic report includes metadata (Node Type, Worker ID) to verify real-time resource allocation and cluster state.
+* **Small/Standard Files** (< 2.5 MB): Routed to the CPU worker.
+* **Large/High-Res Files** (>= 2.5 MB): Routed to the GPU worker.
+* **Model listing** (`/models/`): Always routed to the CPU worker.
 
-## 🛠️ Getting Started (Local Development)
+The threshold is configurable via the `SIZE_THRESHOLD` environment variable. See [`load_balancer/README.md`](load_balancer/README.md) for full configuration details.
 
-### 1. Model Preparation
-Place your trained Keras/TensorFlow models in the `./models/` directory. Ensure the file extensions are `.h5` or `.keras`.
+## Getting Started
 
-### 2. Launching the Ecosystem
-Run the following command from the root directory to build and start all microservices:
+### Prerequisites
+- Docker & Docker Compose
+- Model files (`.h5`/`.keras`) placed in `./models/`
+
+### Option 1: Docker Compose (local development)
+
 ```bash
 docker-compose up --build
 ```
 
-### 3. Usage
-Access the diagnostic dashboard at `http://localhost:8501`. All API calls are internally routed through the Load Balancer at `http://localhost:8000`.
+- Frontend: `http://localhost:8501`
+- Load Balancer API: `http://localhost:8000`
 
-## ⚠️ Model Storage Policy
+### Option 2: Kubernetes (minikube)
+
+```bash
+minikube start --driver=docker
+./k8s/deploy.sh
+minikube service frontend -n glaucoma --url
+```
+
+See [`k8s/README.md`](k8s/README.md) for detailed instructions and useful commands.
+
+## Testing the Load Balancer
+
+The included test script generates a small (~500 KB) and large (~3.5 MB) image and sends them to `/predict/`, verifying that each is routed to the correct worker node.
+
+### Against Docker Compose
+
+```bash
+docker-compose up --build -d
+./test_load_balancer.sh
+```
+
+### Against Kubernetes
+
+```bash
+# Forward the load balancer service to localhost:8000
+kubectl -n glaucoma port-forward svc/load-balancer 8000:8080 &
+
+# Run the test script
+./test_load_balancer.sh http://localhost:8000
+```
+
+### Manual Verification via Logs
+
+While using the frontend, open a separate terminal and tail the logs to observe routing decisions in real time:
+
+```bash
+# Docker Compose
+docker-compose logs -f load-balancer
+
+# Kubernetes
+kubectl -n glaucoma logs -f deployment/load-balancer
+```
+
+Each request logs the method, path, byte size, and routing target:
+```
+[route] POST /predict/ (124987 bytes) -> CPU
+[route] POST /predict/ (3500000 bytes) -> GPU
+[route] GET /models/ -> CPU
+```
+
+## Cloud Features & Scalability
+* **Kubernetes Orchestration:** Manages container lifecycles and provides service discovery.
+* **Horizontal Pod Autoscaler (HPA):** The deployments are prepared for autoscaling. See the [k8s README](k8s/README.md) for setup notes.
+* **Infrastructure Telemetry:** Each diagnostic report includes metadata (Node Type, Worker ID) to verify real-time resource allocation and cluster state.
+
+## Model Storage Policy
 To maintain a lightweight repository, large model weight files are excluded from Git. In production, these are delivered to the AI Workers via **Persistent Volumes (PV)** or cloud-based object storage during the container initialization phase.
