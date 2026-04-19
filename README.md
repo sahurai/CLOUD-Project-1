@@ -84,6 +84,46 @@ minikube service frontend -n glaucoma --url
 
 See [`k8s/README.md`](k8s/README.md) for detailed instructions and useful commands.
 
+## Testing
+
+### Unit Tests
+
+The project includes comprehensive unit tests for all components:
+
+#### AI Worker (Python/FastAPI)
+```bash
+cd cloud_ai_worker
+pip install -r requirements.txt
+python -m pytest tests/ -v
+```
+
+Tests cover:
+- Model listing endpoint (`/models/`)
+- Prediction endpoint (`/predict/`)
+- Image preprocessing
+- Error handling
+
+#### Load Balancer (Go)
+```bash
+cd load_balancer
+go test -v ./...
+```
+
+Tests cover:
+- Routing threshold logic
+- Health endpoint
+- Environment variable handling
+- Performance benchmarks
+
+#### Run All Tests
+```bash
+./test_all.sh
+```
+
+This script runs unit tests for all components and integration tests if Kubernetes is available.
+
+### Integration Testing
+
 ## Testing the Load Balancer
 
 The included test script generates a small (~500 KB) and large (~3.5 MB) image and sends them to `/predict/`, verifying that each is routed to the correct worker node.

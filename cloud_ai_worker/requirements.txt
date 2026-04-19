@@ -15,3 +15,8 @@ Pillow
 
 # Fundamental package for scientific computing and array operations
 numpy
+
+# Testing framework
+pytest
+pytest-asyncio
+httpx  # For testing FastAPI endpoints
