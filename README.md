@@ -20,7 +20,11 @@ The application is built using a **microservices architecture**, designed for hi
 ```text
 .
 ├── docker-compose.yml         # Local orchestration for all services
+├── prepare_models.sh          # Extracts models.zip into ./models
 ├── test_load_balancer.sh      # Automated routing verification script
+├── test_routing_with_logs.sh  # Sends several file sizes and prints routing logs
+├── test_scalability.sh        # Single-pool HPA load test
+├── test_scalability_e2e.sh    # CPU + GPU routing and HPA proof
 │
 ├── load_balancer/             # Go L7 Resource-Aware Load Balancer
 │   ├── main.go                # Reverse proxy with Content-Length routing
@@ -35,6 +39,7 @@ The application is built using a **microservices architecture**, designed for hi
 │   ├── ai-worker-gpu.yaml
 │   ├── load-balancer.yaml
 │   ├── frontend.yaml
+│   ├── ai-worker-hpa.yaml      # Horizontal autoscaling for CPU/GPU workers
 │   └── README.md              # K8s deployment guide
 │
 ├── cloud_frontend_app/        # Streamlit Web Application
@@ -63,12 +68,14 @@ The threshold is configurable via the `SIZE_THRESHOLD` environment variable. See
 
 ### Prerequisites
 - Docker & Docker Compose
-- Model files (`.h5`/`.keras`) placed in `./models/`
+- minikube and kubectl for Kubernetes deployment
+- Model files (`.h5`/`.keras`) placed in `./models/`, or `models.zip` in the project root
 
 ### Option 1: Docker Compose (local development)
 
 ```bash
-docker-compose up --build
+./prepare_models.sh
+docker compose up --build
 ```
 
 - Frontend: `http://localhost:8501`
@@ -78,11 +85,19 @@ docker-compose up --build
 
 ```bash
 minikube start --driver=docker
+minikube addons enable metrics-server
 ./k8s/deploy.sh
 minikube service frontend -n glaucoma --url
 ```
 
 See [`k8s/README.md`](k8s/README.md) for detailed instructions and useful commands.
+
+If `kubectl` is not installed, use minikube's bundled kubectl:
+
+```bash
+alias kubectl="minikube kubectl --"
+kubectl get nodes
+```
 
 ## Testing
 
@@ -131,7 +146,7 @@ The included test script generates a small (~500 KB) and large (~3.5 MB) image a
 ### Against Docker Compose
 
 ```bash
-docker-compose up --build -d
+docker compose up --build -d
 ./test_load_balancer.sh
 ```
 
@@ -145,13 +160,74 @@ kubectl -n glaucoma port-forward svc/load-balancer 8000:8080 &
 ./test_load_balancer.sh http://localhost:8000
 ```
 
+To send several different image sizes and print the matching load-balancer logs:
+
+```bash
+./test_routing_with_logs.sh http://localhost:8000 kubernetes
+```
+
+For Docker Compose:
+
+```bash
+./test_routing_with_logs.sh http://localhost:8000 compose
+```
+
+### Scalability / HPA Test
+
+After deploying to Kubernetes, keep a port-forward open:
+
+```bash
+kubectl -n glaucoma port-forward svc/load-balancer 8000:8080
+```
+
+In another terminal, run sustained load against one worker pool:
+
+```bash
+# CPU worker scaling test: 5 minutes, 12 parallel requests
+./test_scalability.sh http://localhost:8000 300 12 cpu
+
+# GPU-profile worker scaling test
+./test_scalability.sh http://localhost:8000 300 8 gpu
+```
+
+Watch scaling in a third terminal:
+
+```bash
+kubectl -n glaucoma get hpa -w
+kubectl -n glaucoma get pods -w
+```
+
+To prove both worker pools scale in one run:
+
+```bash
+./test_scalability_e2e.sh http://localhost:8000 360 20 10
+```
+
+This test sends CPU-routed and GPU-routed traffic, monitors both HPAs, and prints an automatic verdict for CPU routing, GPU routing, CPU HPA scaling, GPU HPA scaling, and unique worker pods.
+
+In local minikube, HPA is measured with CPU metrics. The CPU and GPU-profile deployments therefore set `LOAD_TEST_CPU_BURN_SECONDS=0.8` to create measurable CPU pressure during load tests. Set it to `0` in the worker manifests for normal inference-only runs.
+
+Expected successful verdict:
+
+```text
+CPU routing:                 PASS
+GPU routing:                 PASS
+CPU HPA scaling:             PASS
+GPU HPA scaling:             PASS
+CPU unique worker pods:      2
+GPU unique worker pods:      2
+PASS: both CPU and GPU worker pools demonstrated HPA scaling.
+```
+
+This is a cloud infrastructure test, not a medical accuracy test. It proves that the load balancer routes light and heavy inference traffic to different worker pools and that Kubernetes HPA adds replicas under sustained load.
+
 ### Manual Verification via Logs
 
 While using the frontend, open a separate terminal and tail the logs to observe routing decisions in real time:
 
 ```bash
 # Docker Compose
-docker-compose logs -f load-balancer
+docker compose logs -f load-balancer
 
 # Kubernetes
 kubectl -n glaucoma logs -f deployment/load-balancer
@@ -165,4 +241,65 @@ Each request logs the method, path, byte size, and routing target:
 ```
 
 ## Model Storage Policy
-To maintain a lightweight repository, large model weight files are excluded from Git. In production, these are delivered to the AI Workers via **Persistent Volumes (PV)** or cloud-based object storage during the container initialization phase.
+To maintain a lightweight repository, large model weight files are excluded from Git. This includes `models/` and `models.zip`, because trained model artifacts are too large for normal Git hosting. For local demos, place `models.zip` in the project root and run `./prepare_models.sh`; for production, deliver the model artifacts via **Persistent Volumes (PV)**, object storage, or Git LFS.
+
+## Kubernetes Scalability
+The cluster manifests include HorizontalPodAutoscalers for both AI worker pools.
+
+```bash
+kubectl -n glaucoma get hpa
+kubectl -n glaucoma describe hpa ai-worker-cpu
+```
+
+The CPU worker scales from 1 to 5 pods at 70% CPU utilization. The GPU-profile worker scales from 1 to 3 pods at 75% CPU utilization. Metrics require Kubernetes Metrics Server; in minikube, enable it with `minikube addons enable metrics-server`.
+
+## Troubleshooting
+
+If minikube fails with Docker storage errors:
+
+```bash
+df -h /var
+docker system df
+docker system prune -a --volumes
+docker builder prune -a
+minikube delete
+minikube start --driver=docker --cpus=2 --memory=6000
+```
+
+If `metrics-server` is `0/1` or `kubectl top nodes` says `Metrics API not available`, wait 1-2 minutes and check again:
+
+```bash
+kubectl -n kube-system get pods
+kubectl top nodes
+```
+
+If it still fails:
+
+```bash
+minikube addons disable metrics-server
+minikube addons enable metrics-server
+kubectl -n kube-system logs -l k8s-app=metrics-server
+```
+
+If Docker build fails during `pip install` with `Temporary failure in name resolution`, fix Docker DNS or build with host networking:
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
+{
+  "dns": ["8.8.8.8", "1.1.1.1"]
+}
+EOF
+sudo systemctl restart docker
+docker run --rm busybox nslookup pypi.org
+```
+
+Then rebuild:
+
+```bash
+eval $(minikube docker-env)
+docker build --network=host -t glaucoma/ai-worker:latest ./cloud_ai_worker
+docker build --network=host -t glaucoma/frontend:latest ./cloud_frontend_app
+docker build --network=host -t glaucoma/load-balancer:latest ./load_balancer
+./k8s/deploy.sh apply
+```

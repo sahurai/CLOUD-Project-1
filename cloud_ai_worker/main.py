@@ -34,6 +34,10 @@ MODEL_CACHE = {}
 # In a production Kubernetes environment, this could be a mounted persistent volume.
 MODEL_DIR = os.getenv("MODEL_DIR", "./models")
 
+# Optional synthetic CPU work for local HPA demonstrations.
+# Defaults to 0 and is intended only for controlled load tests in minikube.
+LOAD_TEST_CPU_BURN_SECONDS = float(os.getenv("LOAD_TEST_CPU_BURN_SECONDS", "0"))
+
 # Allowed extensions for model files
 ALLOWED_MODEL_EXTENSIONS = {".h5", ".keras", ".pb"}
 
@@ -91,6 +95,17 @@ def preprocess_image_from_file(
     return np.expand_dims(arr, axis=0)
 
 
+def burn_cpu_for_load_test(seconds: float) -> None:
+    if seconds <= 0:
+        return
+
+    end_at = time.perf_counter() + seconds
+    value = 0.0
+    while time.perf_counter() < end_at:
+        # Keep one CPU core busy with deterministic floating point work.
+        value = (value * 1.000001 + 3.14159) % 97.0
+
+
 @app.get("/models/")
 async def list_available_models():
     """
@@ -129,6 +144,22 @@ async def list_available_models():
         return {"status": "error", "message": str(e), "models": []}
 
 
+@app.get("/health")
+async def health():
+    """
+    Lightweight health endpoint for Docker/Kubernetes probes.
+
+    It intentionally avoids loading TensorFlow models, because readiness checks
+    must stay cheap while pods are scaling up.
+    """
+    return {
+        "status": "ok",
+        "node_type": NODE_TYPE,
+        "worker_id": WORKER_ID,
+        "model_dir": MODEL_DIR,
+    }
+
+
 @app.post("/predict/")
 async def predict(file: UploadFile = File(...), model_name: str = Form(...)):
     """
@@ -160,6 +191,7 @@ async def predict(file: UploadFile = File(...), model_name: str = Form(...)):
         # model.predict returns a 2D array (e.g., [[0.85]]).
         # We extract the single scalar value and multiply by 100 to get a percentage.
         prediction_value = float(model.predict(x)[0][0])
+        burn_cpu_for_load_test(LOAD_TEST_CPU_BURN_SECONDS)
         probability_percentage = prediction_value * 100
 
         # Calculate performance metric for load balancing analysis

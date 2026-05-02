@@ -21,11 +21,32 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8001
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 20
           env:
             - name: NODE_TYPE
               value: "Standard CPU"
             - name: MODEL_DIR
               value: /app/models
+            - name: LOAD_TEST_CPU_BURN_SECONDS
+              value: "0.8"
           volumeMounts:
             - name: models
               mountPath: /app/models

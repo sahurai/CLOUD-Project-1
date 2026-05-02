@@ -11,6 +11,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K8S="$ROOT/k8s"
 
+"$ROOT/prepare_models.sh"
+
 # --- Build images inside minikube's Docker daemon ---
 if [[ "${1:-}" != "apply" ]]; then
     echo "==> Configuring shell for minikube Docker daemon..."
@@ -39,6 +41,7 @@ kubectl apply -f "$K8S/ai-worker-cpu.yaml"
 kubectl apply -f "$K8S/ai-worker-gpu.yaml"
 kubectl apply -f "$K8S/load-balancer.yaml"
 kubectl apply -f "$K8S/frontend.yaml"
+kubectl apply -f "$K8S/ai-worker-hpa.yaml"
 
 echo ""
 echo "==> Waiting for pods to be ready..."
@@ -46,6 +49,10 @@ kubectl -n glaucoma rollout status deployment/ai-worker-cpu  --timeout=120s
 kubectl -n glaucoma rollout status deployment/ai-worker-gpu  --timeout=120s
 kubectl -n glaucoma rollout status deployment/load-balancer   --timeout=120s
 kubectl -n glaucoma rollout status deployment/frontend        --timeout=120s
+
+echo ""
+echo "==> Autoscalers:"
+kubectl -n glaucoma get hpa
 
 echo ""
 echo "==> All deployments ready. Access the frontend:"
