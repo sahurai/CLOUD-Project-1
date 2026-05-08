@@ -11,6 +11,7 @@ The application is built using a **microservices architecture**, designed for hi
 ### Core Microservices
 | Component | Technology | Role |
 | :--- | :--- | :--- |
+| **Orchestrator** | Go | Control-plane HTTP API: live-tunable config (threshold, HPA min/max, safeguards), validated demo endpoints. See [`orchestrator/README.md`](orchestrator/README.md). |
 | **Frontend** | Streamlit | Web-based diagnostic dashboard for medical personnel. |
 | **L7 Load Balancer** | Go | Resource-aware reverse proxy that routes traffic based on image size. See [`load_balancer/README.md`](load_balancer/README.md). |
 | **AI Worker (CPU)** | FastAPI / TF | Processes standard images on high-throughput, cost-effective nodes. |
@@ -31,6 +32,17 @@ The application is built using a **microservices architecture**, designed for hi
 │   ├── Dockerfile             # Multi-stage Alpine build
 │   └── README.md              # Load balancer documentation
 │
+├── orchestrator/              # Go control-plane HTTP API (NEW)
+│   ├── main.go                # Server entry, flags, graceful shutdown
+│   ├── config.go              # Live config: defaults, validation, persistence
+│   ├── validate.go            # Upload safeguards (size, type, decompression bombs)
+│   ├── k8s.go                 # kubectl wrappers for HPA & deployment patches
+│   ├── handlers.go            # /api/config, /api/status, /api/demo/predict
+│   ├── demo.go                # Synthetic load-test runner
+│   ├── server.go              # HTTP routes, middleware
+│   ├── Dockerfile
+│   └── README.md
+│
 ├── k8s/                       # Kubernetes manifests (minikube)
 │   ├── deploy.sh              # Build & deploy helper script
 │   ├── namespace.yaml
@@ -40,6 +52,7 @@ The application is built using a **microservices architecture**, designed for hi
 │   ├── load-balancer.yaml
 │   ├── frontend.yaml
 │   ├── ai-worker-hpa.yaml      # Horizontal autoscaling for CPU/GPU workers
+│   ├── orchestrator.yaml       # Orchestrator + RBAC for HPA/deployment patch
 │   └── README.md              # K8s deployment guide
 │
 ├── cloud_frontend_app/        # Streamlit Web Application
@@ -91,6 +104,41 @@ minikube service frontend -n glaucoma --url
 ```
 
 See [`k8s/README.md`](k8s/README.md) for detailed instructions and useful commands.
+
+### Demo via the Orchestrator API
+
+After deploying with `./k8s/deploy.sh`, the orchestrator is exposed on
+NodePort `30900`:
+
+```bash
+ORCH_URL=$(minikube service orchestrator -n glaucoma --url)
+
+# Inspect the live config (every tunable, with current values)
+curl -s "$ORCH_URL/api/config" | jq
+
+# Tune autoscaling and routing live — values are validated, persisted,
+# and applied to the cluster via kubectl patches in the background.
+curl -X PUT "$ORCH_URL/api/config" \
+  -H 'Content-Type: application/json' \
+  -d '{"size_threshold_bytes": 1500000, "cpu_max_replicas": 8}'
+
+# Run a single validated prediction (rejects oversized images, wrong
+# types, decompression bombs, path-traversal model names).
+curl -X POST "$ORCH_URL/api/demo/predict" \
+  -F file=@models/sample.jpg -F model_name=glaucoma_v1.h5
+
+# Run a synthetic batch load test and get back latency percentiles plus
+# the per-pod distribution.
+curl -X POST "$ORCH_URL/api/demo/loadtest" \
+  -H 'Content-Type: application/json' \
+  -d '{"n": 100, "concurrency": 8, "model_name": "glaucoma_v1.h5"}'
+
+# Aggregated cluster status (pods, HPAs, current config).
+curl -s "$ORCH_URL/api/status" | jq
+```
+
+See [`orchestrator/README.md`](orchestrator/README.md) for the full API
+reference, configurable fields, bounds, and edge-case behaviour.
 
 If `kubectl` is not installed, use minikube's bundled kubectl:
 

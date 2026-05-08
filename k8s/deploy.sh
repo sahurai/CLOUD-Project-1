@@ -22,6 +22,7 @@ if [[ "${1:-}" != "apply" ]]; then
     docker build -t glaucoma/ai-worker:latest  "$ROOT/cloud_ai_worker"
     docker build -t glaucoma/frontend:latest   "$ROOT/cloud_frontend_app"
     docker build -t glaucoma/load-balancer:latest "$ROOT/load_balancer"
+    docker build -t glaucoma/orchestrator:latest "$ROOT/orchestrator"
     echo "==> Images built."
 fi
 
@@ -42,6 +43,7 @@ kubectl apply -f "$K8S/ai-worker-gpu.yaml"
 kubectl apply -f "$K8S/load-balancer.yaml"
 kubectl apply -f "$K8S/frontend.yaml"
 kubectl apply -f "$K8S/ai-worker-hpa.yaml"
+kubectl apply -f "$K8S/orchestrator.yaml"
 
 echo ""
 echo "==> Waiting for pods to be ready..."
@@ -49,6 +51,7 @@ kubectl -n glaucoma rollout status deployment/ai-worker-cpu  --timeout=120s
 kubectl -n glaucoma rollout status deployment/ai-worker-gpu  --timeout=120s
 kubectl -n glaucoma rollout status deployment/load-balancer   --timeout=120s
 kubectl -n glaucoma rollout status deployment/frontend        --timeout=120s
+kubectl -n glaucoma rollout status deployment/orchestrator    --timeout=120s
 
 echo ""
 echo "==> Autoscalers:"

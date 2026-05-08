@@ -59,6 +59,30 @@ services:
     networks:
       - glaucoma-net
 
+  # Orchestrator: control-plane HTTP API on top of the load balancer.
+  # In Compose mode kubectl is not available; ORCH_NO_KUBE switches it to
+  # config-only mode (the demo + validation endpoints still work).
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    ports:
+      - "9000:9000"
+    environment:
+      - ORCH_LISTEN=:9000
+      - ORCH_LB_URL=http://load-balancer:8080
+      - ORCH_CONFIG=/var/lib/orchestrator/config.json
+      - ORCH_NO_KUBE=1
+    volumes:
+      - orchestrator-config:/var/lib/orchestrator
+    depends_on:
+      - load-balancer
+    networks:
+      - glaucoma-net
+
 networks:
   glaucoma-net:
     driver: bridge
+
+volumes:
+  orchestrator-config:
