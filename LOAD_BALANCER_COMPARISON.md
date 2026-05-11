@@ -35,16 +35,17 @@ Vanilla k8s primitives cannot match on request body size. To replicate the same 
 | Aspect | Custom Go LB | k8s-only (Ingress + custom Lua/Envoy) |
 |---|---|---|
 | OSI layer | L7 (HTTP) | L7 (HTTP) |
-| Routes by `Content-Length` | ✅ native, one `if` | ⚠️ only via custom Lua / EnvoyFilter |
+| Routes by `Content-Length` | yes, native, one `if` | only via custom Lua / EnvoyFilter |
 | Components to install | none (one Go binary in a pod) | Ingress Controller (~100 MB image, helm chart) |
 | Configuration surface | 4 env vars | Ingress manifest + ConfigMap with Lua + controller helm values |
+| Runtime reconfiguration | yes, via orchestrator REST (`kubectl set env` triggers rollout) | yes, via ConfigMap reload / controller hot-reload |
 | Lines to maintain | ~80 lines of Go | ~30 lines Lua + 50+ lines YAML + controller upgrades |
 | Logic location | one file, one language | spread across annotations, Lua, and controller config |
 | Debugging | `go test`, `kubectl logs deployment/load-balancer` | decipher Lua + Nginx error logs in controller pod |
-| Health-aware retry / circuit-breaker | ❌ (returns 502 on backend failure) | ✅ built into the controller |
-| TLS termination | ❌ | ✅ |
+| Health-aware retry / circuit-breaker | no (returns 502 on backend failure) | yes, built into the controller |
+| TLS termination | no | yes |
 | Load balancing across pool replicas | done by kube-proxy downstream | done by the controller itself |
-| Autoscaling | ❌ (HPA scales workers, orthogonal) | ❌ (same — HPA is orthogonal) |
+| Autoscaling | no (HPA scales workers, orthogonal) | no (same — HPA is orthogonal) |
 | Portability | also runs in `docker-compose` unchanged | k8s-only |
 | Operational risk | one tiny service | another platform component to upgrade and monitor |
 | Image size | ~10 MB Alpine | controller ~100 MB + sidecars |
