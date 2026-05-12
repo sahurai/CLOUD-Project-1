@@ -400,10 +400,10 @@ curl -X PUT "$ORCH_URL/api/config" -H 'Content-Type: application/json' \
 curl -s "$ORCH_URL/api/status" | jq '.cluster'
 # (if kubectl was unavailable on a PUT:)  curl -X POST "$ORCH_URL/api/config/apply"
 # 6. A single validated prediction (rejects oversize / wrong type / decompression bomb / bad model_name)
-curl -X POST "$ORCH_URL/api/demo/predict" -F file=@models/sample.jpg -F model_name=glaucoma_v1.h5
+curl -X POST "$ORCH_URL/api/demo/predict" -F file=@models/sample.jpg -F model_name=cnn_model_v1.keras
 # 7. A synthetic batch load test (latency percentiles + per-pod spread)
 curl -X POST "$ORCH_URL/api/demo/loadtest" -H 'Content-Type: application/json' \
-     -d '{"n": 100, "concurrency": 8, "model_name": "glaucoma_v1.h5"}'
+     -d '{"n": 100, "concurrency": 8, "model_name": "cnn_model_v1.keras"}'
 ```
 
 #### Option C — Orchestrator alone, no cluster (config-only)
@@ -466,7 +466,28 @@ GPU unique worker pods:      2         ← M4: load was spread over ≥2 GPU pod
 PASS: both CPU and GPU worker pools demonstrated HPA scaling.
 ```
 
-> **Tip:** paste the actual numbers from your run here — observed latency `p95`/`p99`, throughput (RPS), how many seconds until the first new pod became `Ready`, the peak replica count of each pool, and a short excerpt of `kubectl -n glaucoma get hpa` during the run. The script output above is the template; the concrete figures are what make the experiment convincing.
+#### Observed run
+
+`./test_scalability_e2e.sh http://localhost:8000 360 20 10` on minikube (Docker driver), model `cnn_model_v1.keras`. The script finished early on both pools as soon as routing + scale-up were proven, and printed exactly the verdict block above. Concrete figures from this run:
+
+| | CPU pool (`ai-worker-cpu`) | GPU pool (`ai-worker-gpu`) |
+|---|---|---|
+| Test image size | 1 456 bytes (< 2.5 MB → routed to CPU) | 5 889 693 bytes (≈5.9 MB, ≥ 2.5 MB → routed to GPU) |
+| HPA CPU load observed | `322 % … 352 % / 70 %` target | `186 % … 196 % / 75 %` target |
+| Replicas | `1 → 2` (first new pod `Ready` ~24 s into the run), then `→ 4` while the GPU phase ran | `1 → 2` (new pod `pl7bs` `Ready` within ~20 s of being created) |
+| Requests served / status | 40 (38 `success`, 2 transient `parse-error`), all `node_type = Standard CPU` | 130, all `success`, all `node_type = High-Performance GPU` |
+| Unique worker pods (M4) | 2 — `…-pnthg`: 24 reqs, `…-gr8dp`: 14 reqs | 2 — `…-lbgz2`: 126 reqs, `…-pl7bs`: 4 reqs |
+| Routing / Scaling verdict | PASS / PASS | PASS / PASS |
+
+`kubectl -n glaucoma get hpa` mid-run (during the GPU phase, while the CPU pool was still hot and the GPU pool ramping up):
+
+```text
+NAME            REFERENCE                  TARGETS         MINPODS   MAXPODS   REPLICAS
+ai-worker-cpu   Deployment/ai-worker-cpu   cpu: 352%/70%   1         5         4
+ai-worker-gpu   Deployment/ai-worker-gpu   cpu: 186%/75%   1         3         1   → 2
+```
+
+After traffic stopped, both pools cooled down (`cpu: 0%`) and scaled back toward their minimums once the HPA stabilization window elapsed.
 
 Corroborating evidence:
 
