@@ -1,10 +1,9 @@
 # Glaucoma Detection Cloud Ecosystem — Project Documentation
 
-**Team (max. 4 members):** Ilia Sukhina, Yevhenii Severin, Adam Partl
-
+**Team:** Ilia Sukhina, Yevhenii Severin, Adam Partl
 **Course:** Cloud Computing — Project 1
 
-**Repository layout referenced throughout:** [`load_balancer/`](load_balancer/), [`orchestrator/`](orchestrator/), [`cloud_ai_worker/`](cloud_ai_worker/), [`cloud_frontend_app/`](cloud_frontend_app/), [`k8s/`](k8s/), supporting docs [`README.md`](README.md), [`EDGE_CASES.md`](EDGE_CASES.md), [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md).
+**Repository:** [`load_balancer/`](load_balancer/), [`orchestrator/`](orchestrator/), [`cloud_ai_worker/`](cloud_ai_worker/), [`cloud_frontend_app/`](cloud_frontend_app/), [`k8s/`](k8s/); supporting docs [`README.md`](README.md), [`EDGE_CASES.md`](EDGE_CASES.md), [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md).
 
 ---
 
@@ -12,43 +11,39 @@
 
 ### 1.1 Motivation
 
-Glaucoma is one of the leading causes of irreversible blindness worldwide. Early screening from retinal *fundus photographs* is effective but labour-intensive: a human grader must look at every image. The bottleneck is not the AI model — a trained Convolutional Neural Network (CNN) classifies a fundus image in well under a second — the bottleneck is **delivering that inference reliably and elastically at clinic scale**: many concurrent uploads, images of very different sizes (a phone snapshot vs. a 4K desktop fundus camera export), and the need to keep a heavy TensorFlow process from crashing a web server with Out-Of-Memory (OOM) errors.
+Glaucoma is a leading cause of irreversible blindness. Screening from retinal *fundus photographs* works but is slow: a human grader must look at every image.
 
-This project is therefore **a cloud-infrastructure project**, not a medical-accuracy project. We build the cloud plumbing that runs a glaucoma-detection CNN as a horizontally scalable, resource-aware, self-tunable service on Kubernetes.
+The hard part is **not** the AI model — a Convolutional Neural Network (CNN) classifies one image in well under a second. The hard part is **delivering that inference reliably and elastically at clinic scale**:
+
+* many uploads arrive at the same time;
+* images vary wildly in size (a phone snapshot vs. a 4K fundus-camera export);
+* a heavy TensorFlow process must not crash a web server with an Out-Of-Memory error.
+
+So this is **a cloud-infrastructure project, not a medical-accuracy project**. We build the plumbing that runs a glaucoma CNN as a horizontally scalable, resource-aware, self-tunable service on Kubernetes.
 
 ### 1.2 Project focus
 
-Design and implement a **cloud-native microservice ecosystem** that:
+A **cloud-native microservice ecosystem** that:
 
 1. Serves a glaucoma-detection CNN as an independent, statelessly scalable inference microservice.
-2. Routes inference traffic to the *right class of worker node* depending on the cost of the request (small images → cheap CPU pool, large high-resolution images → GPU-profile pool) using a **custom Layer-7 (HTTP) load balancer** — the cloud-functionality component we implement ourselves.
+2. Routes traffic to the *right class of worker* by request cost — small images go to a cheap CPU pool, large images go to a GPU-profile pool — using a **custom Layer-7 (HTTP) load balancer**. This is the cloud-functionality component we implement ourselves.
 3. Autoscales each worker pool independently with the Kubernetes **HorizontalPodAutoscaler (HPA)**.
-4. Exposes a **control-plane orchestrator** (REST API) that lets an operator re-tune routing thresholds, HPA min/max replicas and upload safeguards *at runtime*, with validation and persistence — and that runs a built-in synthetic load test for demonstration.
+4. Exposes a **control-plane orchestrator** (REST API) that re-tunes routing thresholds, HPA min/max replicas and upload safeguards *at runtime* (validated, persisted), and runs a built-in synthetic load test.
 5. Provides a decoupled **Streamlit dashboard** for medical staff.
 
-### 1.3 Measurable objectives (used by the experiment in §6)
+### 1.3 Measurable objectives
 
-The assignment requires at least one measurable goal. We define the following, all verified by the scripted experiment ([`test_scalability_e2e.sh`](test_scalability_e2e.sh)):
+The assignment asks for at least one measurable goal. We define five, all verified by one scripted experiment ([`test_scalability_e2e.sh`](test_scalability_e2e.sh)) — see [§6](#6-experiment--verifying-the-stated-goal).
 
-| # | Measurable objective | Pass criterion | How measured |
+| # | Objective | Pass criterion | Measured by |
 |---|---|---|---|
-| **M1** | Resource-aware routing works | 100 % of "small" requests (< 2.5 MB) reach the CPU pool **and** 100 % of "large" requests (≥ 2.5 MB) reach the GPU pool | `node_type` field in every `/predict/` response + load-balancer routing logs |
-| **M2** | CPU worker pool autoscales under load | `ai-worker-cpu` replica count grows from `1` to `≥ 2` while sustained load is applied, then scales back down after the stabilization window | `kubectl -n glaucoma get hpa` / `get pods` sampled during the test |
-| **M3** | GPU-profile worker pool autoscales under load | `ai-worker-gpu` replica count grows from `1` to `≥ 2` under sustained large-image load | same as M2 |
-| **M4** | Load is actually spread across the new replicas | At least 2 distinct worker pod IDs serve requests for each pool during the run | `worker_id` (pod hostname) returned by the worker, aggregated in `worker_spread` by the orchestrator's `/api/demo/loadtest` |
-| **M5** | Runtime reconfiguration takes effect | After `PUT /api/config {"size_threshold_bytes": …}` a borderline-sized request changes pool accordingly | orchestrator `/api/status` + a follow-up `/api/demo/predict` showing `routed_to_pool` |
+| **M1** | Resource-aware routing works | 100 % of small requests (< 2.5 MB) reach the CPU pool, and 100 % of large requests (≥ 2.5 MB) reach the GPU pool | `node_type` in each `/predict/` response + load-balancer logs |
+| **M2** | CPU pool autoscales under load | `ai-worker-cpu` grows from `1` to `≥ 2` replicas under sustained load, then scales back down | `kubectl -n glaucoma get hpa/pods`, sampled during the test |
+| **M3** | GPU pool autoscales under load | `ai-worker-gpu` grows from `1` to `≥ 2` replicas under sustained large-image load | same as M2 |
+| **M4** | Load is spread across the new replicas | ≥ 2 distinct worker pod IDs serve requests for each pool | `worker_id` in the `worker_spread` map from `/api/demo/loadtest` |
+| **M5** | Runtime reconfiguration takes effect | After `PUT /api/config {"size_threshold_bytes": …}`, a borderline-sized request changes pool | orchestrator `/api/status` + a follow-up `/api/demo/predict` showing `routed_to_pool` |
 
-A successful run prints:
-
-```text
-CPU routing:                 PASS
-GPU routing:                 PASS
-CPU HPA scaling:             PASS
-GPU HPA scaling:             PASS
-CPU unique worker pods:      2
-GPU unique worker pods:      2
-PASS: both CPU and GPU worker pools demonstrated HPA scaling.
-```
+A successful run prints the verdict block shown in [§6.4](#64-expected-result-success-criterion).
 
 ---
 
@@ -56,27 +51,27 @@ PASS: both CPU and GPU worker pools demonstrated HPA scaling.
 
 ### 2.1 Application domain — medical image screening
 
-* **Input data:** retinal fundus photographs (JPEG/PNG), highly variable in resolution and file size. The CNN expects a fixed `224 × 224 × 3` tensor, so every image is resized server-side; this means the *compute cost per request is roughly constant once decoded*, but the *network + decode cost grows with file size*, and large images are the ones that put memory pressure on a worker.
-* **Output:** a single probability in `[0, 1]` (likelihood of glaucoma), surfaced to the clinician as a percentage plus a clinical band ("Low Risk" / "Suspicious" / "High Risk").
-* **Non-functional needs:** availability during screening campaigns, elasticity (load is bursty — a clinic processes a batch, then nothing), isolation (a model crash must not take down the UI), observability (which node/pod handled a given medical request — an audit trail), and safety on untrusted uploads (size limits, type checks, decompression-bomb guards).
+* **Input:** retinal fundus photographs (JPEG/PNG), very different in resolution and file size. The CNN expects a fixed `224 × 224 × 3` tensor, so every image is resized server-side. Result: the compute cost per request is roughly constant once the image is decoded, but the network + decode cost grows with file size — and large images are the ones that put memory pressure on a worker.
+* **Output:** a probability in `[0, 1]` (likelihood of glaucoma), shown to the clinician as a percentage plus a clinical band — "Low Risk" / "Suspicious" / "High Risk".
+* **Non-functional needs:** availability during screening campaigns; elasticity (load is bursty); isolation (a model crash must not take down the UI); observability (an audit trail of which node/pod handled a given medical request); and safety on untrusted uploads (size limits, type checks, decompression-bomb guards).
 
-### 2.2 Cloud-computing domain — the parts we actually build
-
-The project sits at the intersection of several classic cloud building blocks. We map each to a concrete artifact:
+### 2.2 Cloud-computing domain — the parts we build
 
 | Cloud concept | Where it appears in this project |
 |---|---|
-| **Containerization (Docker)** | Every service ships as a Docker image; multi-stage Alpine builds for the Go services keep images ~10 MB. |
-| **Container orchestration (Kubernetes)** | `glaucoma` namespace, Deployments + Services, PersistentVolume for model files, NodePort for ingress to the UI. |
-| **Microservices architecture** | 5 independently deployable services (orchestrator, frontend, load balancer, CPU worker, GPU worker). |
+| **Containerization (Docker)** | Every service ships as a Docker image; multi-stage Alpine builds keep the Go services ~10 MB. |
+| **Container orchestration (Kubernetes)** | One `glaucoma` namespace; Deployments + Services; a PersistentVolume for model files; NodePort ingress for the UI and the orchestrator. |
+| **Microservices architecture** | 5 independently deployable services. |
 | **Elastic horizontal autoscaling** | Two `HorizontalPodAutoscaler` objects driven by the Metrics Server. |
-| **Layer-7 / application-aware load balancing** | **Our own Go reverse proxy** that routes on `Content-Length` — *the self-implemented cloud-functionality component*. |
-| **Control plane / Infrastructure-as-an-API** | The Go **orchestrator**: a REST API that mutates cluster state (HPA bounds, LB env) via `kubectl` and persists config to a volume. |
-| **Stateless service design** | Workers keep nothing in memory except a model cache that can be rebuilt from the PV; any pod can serve any request. |
+| **Layer-7 / application-aware load balancing** | **Our own Go reverse proxy**, routing on `Content-Length` — *the self-implemented cloud-functionality component*. |
+| **Control plane / Infrastructure-as-an-API** | The Go **orchestrator** — a REST API that changes cluster state (HPA bounds, LB env) via `kubectl` and persists its config to a volume. |
+| **Stateless service design** | Workers hold only a rebuildable model cache; any pod can serve any request. |
 
-### 2.3 Why "resource-aware" routing is the interesting cloud problem here
+### 2.3 Why resource-aware routing is the interesting cloud problem here
 
-A plain Kubernetes `Service` load-balances **between identical replicas of one pool** (L4, round-robin). It cannot look at an HTTP request and decide *which pool* should handle it. But our workload genuinely has two cost classes (small vs. large images) and we want them on different node profiles for cost/stability reasons. Bridging that gap — an L7 decision *in front of* the L4 mechanics — is the cloud-functionality we implement ourselves. §3 and the dedicated [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md) justify building it rather than installing a heavyweight Ingress controller.
+A plain Kubernetes `Service` load-balances **between identical replicas of one pool** (L4, round-robin). It cannot look at an HTTP request and decide *which pool* should handle it.
+
+But our workload genuinely has two cost classes — small vs. large images — and we want them on different node profiles for cost and stability reasons. Bridging that gap (an L7 decision *in front of* the L4 mechanics) is the functionality we implement ourselves. The algorithm is in [§4.3.1](#431-the-l7-routing-algorithm-go-reverse-proxy), the full write-up in [§5.3](#53-the-self-implemented-cloud-functionality-component--the-go-l7-load-balancer), and the build-vs-buy comparison in [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md).
 
 ---
 
@@ -84,22 +79,22 @@ A plain Kubernetes `Service` load-balances **between identical replicas of one p
 
 ### 3.1 Comparable approaches
 
-| Approach | What it offers | Why it does not directly fit our requirement |
+| Approach | What it offers | Why it does not directly fit |
 |---|---|---|
-| **Plain Kubernetes `Service` + kube-proxy** | L4 load balancing across identical pods; trivial to use | Cannot route by request body size / `Content-Length` — it is L4 and content-agnostic. It picks a *pod*, never a *pool*. |
-| **Kubernetes HPA alone** | Elastic replica count per Deployment | Orthogonal — decides *how many* pods, never *which* pod or pool a given request goes to. We use it, but it does not solve routing. |
-| **Ingress Controller (NGINX / Traefik / Envoy / HAProxy)** | Mature L7: TLS, host/path routing, retries, rate limiting, circuit breakers | None of them match on request body size out of the box. Replicating our rule needs a custom NGINX/Lua snippet or an `EnvoyFilter` reading `$content_length`, plus a ~100 MB controller image, a Helm chart, and another platform component to upgrade and monitor. Heavy for a single `if`. |
-| **Service mesh (Istio / Linkerd)** | Fine-grained L7 traffic policy, observability | Even more operational weight; still no native body-size matcher; massive overkill for a 5-service demo. |
-| **Cloud-provider managed model endpoints (AWS SageMaker, GCP Vertex AI, Azure ML)** | Managed autoscaling inference, A/B traffic splitting | Vendor lock-in; opaque; the assignment asks us to *implement* a cloud-functionality component, not consume a managed one; and they still don't expose "route by upload size to a different instance type" as a first-class knob. |
-| **Generic API gateways (Kong, KrakenD)** | Plugin-based L7 routing | Same story — request-size routing is, at best, a custom plugin; another component to run. |
+| **Plain K8s `Service` + kube-proxy** | L4 load balancing across identical pods | Cannot route by request body size — it is content-agnostic and picks a *pod*, never a *pool*. |
+| **Kubernetes HPA alone** | Elastic replica count per Deployment | Orthogonal — it decides *how many* pods, never *which* pod or pool a request hits. We use it, but it does not solve routing. |
+| **Ingress controller (NGINX / Traefik / Envoy / HAProxy)** | Mature L7: TLS, host/path routing, retries, rate limiting | None match on request body size out of the box. Replicating our rule needs custom NGINX/Lua or an `EnvoyFilter`, plus a ~100 MB controller image and a Helm chart — heavy for a single `if`. |
+| **Service mesh (Istio / Linkerd)** | Fine-grained L7 traffic policy + observability | Even more operational weight; still no body-size matcher; overkill for a 5-service demo. |
+| **Managed model endpoints (SageMaker / Vertex AI / Azure ML)** | Managed autoscaling inference, A/B traffic splitting | Vendor lock-in; opaque; the assignment asks us to *implement* a cloud-functionality component, not consume one — and they still don't expose "route by upload size to a different instance type" as a knob. |
+| **Generic API gateways (Kong / KrakenD)** | Plugin-based L7 routing | Request-size routing is, at best, a custom plugin — another component to run. |
 
 ### 3.2 How our solution differs
 
 * **The routing primitive is the differentiator.** The whole CPU/GPU decision is four lines of Go (`if r.ContentLength >= threshold { gpuProxy } else { cpuProxy }`) in an ~80-line, ~10 MB Alpine container — versus a 100 MB Ingress controller plus custom Lua/Envoy config spread across annotations, a ConfigMap and Helm values.
-* **Two complementary layers, cleanly separated.** Our Go LB owns the *domain decision* (which pool); kube-proxy owns the *infrastructure mechanic* (which pod within the pool); HPA owns *how many pods*. Neither replaces the other — see the layered flow in §4.1.
-* **A real control plane for the demo.** Unlike "just deploy YAML", we ship the **orchestrator**: an Infrastructure-as-an-API service that re-tunes routing threshold, HPA min/max, target utilization and upload safeguards *at runtime* (validated, persisted, reconciled via `kubectl`), plus a built-in synthetic load tester that reports latency percentiles and per-pod spread. That makes the system *measurably* tunable, which is exactly what the experiment in §6 exercises.
-* **Portability.** Because the LB is a tiny standalone binary, the exact same routing logic runs unchanged under `docker compose` for local development and under Kubernetes in the "cloud" deployment. An Ingress-based design would be k8s-only.
-* **Honest scope.** We do *not* claim mesh-grade features (TLS termination, retries, circuit breakers, rate limiting) — see the explicit limitations in §5.2. The point is to demonstrate the cloud mechanics (containerization, orchestration, L7 routing, elastic autoscaling, a control-plane API), not to re-implement Envoy.
+* **Two complementary layers, cleanly separated.** Our Go LB owns the *domain decision* (which pool); kube-proxy owns the *infrastructure mechanic* (which pod); HPA owns *how many pods*. None replaces the others — see [§4.1](#41-base-architecture-diagram).
+* **A real control plane for the demo.** The **orchestrator** re-tunes the routing threshold, HPA min/max, target utilization and upload safeguards *at runtime* (validated, persisted, reconciled via `kubectl`), plus a built-in synthetic load tester that reports latency percentiles and per-pod spread — exactly what [§6](#6-experiment--verifying-the-stated-goal) exercises.
+* **Portability.** The LB is a tiny standalone binary, so the identical routing logic runs under `docker compose` locally and under Kubernetes in the cloud deployment. An Ingress-based design would be Kubernetes-only.
+* **Honest scope.** We do *not* claim mesh-grade features (TLS termination, retries, circuit breakers, rate limiting) — see [§5.2](#52-limitations--boundaries-of-the-solution). The point is to demonstrate the cloud mechanics, not to re-implement Envoy.
 
 ---
 
@@ -107,96 +102,56 @@ A plain Kubernetes `Service` load-balances **between identical replicas of one p
 
 ### 4.1 Base architecture diagram
 
-```text
-                          ┌─────────────────────────────────────────────┐
-                          │            Kubernetes namespace: glaucoma    │
-                          │                                              │
-  medical staff           │   ┌────────────┐                             │
-  (browser) ──NodePort──▶ │   │  frontend  │  Streamlit dashboard        │
-                          │   │ (Streamlit)│  GET /models/ , POST /predict│
-                          │   └─────┬──────┘                             │
-                          │         │ HTTP                               │
-   operator / demo        │         ▼                                    │
-   curl, scripts ─NodePort▶  ┌──────────────┐  validates upload          │
-                          │  │ orchestrator │  (size, MIME, dimensions,  │
-                          │  │   (Go API)   │   model_name); patches      │
-                          │  └──────┬───────┘   HPA + LB env via kubectl  │
-                          │         │ HTTP /predict/                     │
-                          │         ▼                                    │
-                          │  ┌──────────────┐   L7 routing decision      │
-                          │  │ load-balancer│   if Content-Length ≥ T    │
-                          │  │   (Go proxy) │      → GPU pool             │
-                          │  └───┬──────┬───┘   else → CPU pool;          │
-                          │      │      │       GET /models/ → CPU pool  │
-                          │  L4  │      │  L4                            │
-                          │      ▼      ▼                                │
-                          │ ┌─────────┐ ┌─────────┐                      │
-                          │ │ Service │ │ Service │   (kube-proxy: pick   │
-                          │ │ cpu     │ │ gpu     │    a Ready pod, RR)   │
-                          │ └───┬─────┘ └───┬─────┘                      │
-                          │     │ 1..5      │ 1..3   ◀── HorizontalPod    │
-                          │  ┌──┴───┐    ┌──┴───┐        Autoscaler       │
-                          │  │ai-wk │ ...│ai-wk │   (CPU% target)         │
-                          │  │ cpu  │    │ gpu  │   FastAPI + TF/Keras    │
-                          │  └──┬───┘    └──┬───┘                        │
-                          │     └────┬──────┘                            │
-                          │          ▼                                   │
-                          │   ┌──────────────┐                           │
-                          │   │ models-pv    │  PersistentVolume: .h5/.keras
-                          │   │  (PVC)       │  weights mounted read-only │
-                          │   └──────────────┘                           │
-                          │                                              │
-                          │   Metrics Server ──feeds──▶ HPA controllers   │
-                          └─────────────────────────────────────────────┘
+**(a) Request data path and topology.** The highlighted node is the self-implemented cloud-functionality component ([§4.3.1](#431-the-l7-routing-algorithm-go-reverse-proxy), [§5.3](#53-the-self-implemented-cloud-functionality-component--the-go-l7-load-balancer)).
 
-Request flow (predict):  frontend/operator → orchestrator (validate) → load-balancer
-                         → (size check) → cpu|gpu Service → worker pod → model.predict → JSON
+![Request data path and topology — clients → frontend → orchestrator → load-balancer → CPU/GPU Service → worker pods → models-pv](docs/arch-a.png)
 
-Responsibility split:    Go LB picks the POOL (L7)
-                         kube-proxy picks the POD inside the pool (L4)
-                         HPA decides HOW MANY pods exist per pool
-                         orchestrator RE-TUNES all of the above at runtime
-```
+**(b) Control & scaling plane** (runs alongside the data path above).
 
-### 4.2 Architectural views and the core functionality of each
+![Control and scaling plane — Metrics Server → HPAs → scale worker pods; orchestrator patches the HPAs and the load-balancer threshold via kubectl](docs/arch-b.png)
+
+**Predict flow:** clinician/operator → orchestrator (validate) → load-balancer → (size check) → CPU or GPU Service → worker pod → `model.predict` → JSON.
+
+**Responsibility split:** the Go LB picks the **pool** (L7) · kube-proxy picks the **pod** in that pool (L4) · HPA decides **how many** pods per pool · the orchestrator **re-tunes** all of the above at runtime.
+
+### 4.2 Architectural views
 
 #### 4.2.1 Logical / decomposition view — the five microservices
 
-| Service | Tech | Core functionality |
+| Service | Tech | What it does |
 |---|---|---|
-| **Frontend** | Python / Streamlit ([`cloud_frontend_app/app.py`](cloud_frontend_app/app.py)) | Diagnostic dashboard for clinicians: uploads a fundus image, picks a model (`GET /models/`), calls `POST /predict/`, renders the probability, the clinical band, and the infrastructure telemetry (`node_type`, `worker_id`, `execution_time`). Fully decoupled — it knows only one backend URL and does no routing itself. |
-| **Orchestrator** | Go ([`orchestrator/`](orchestrator/)) | Control plane / Infrastructure-as-an-API. Owns one validated, persisted JSON config object (routing threshold, HPA min/max & target per pool, upload safeguards, demo caps, upstream timeout). On `PUT /api/config` it reconciles the cluster (`kubectl patch` on HPAs, `kubectl set env` on the LB). Runs the demo: `POST /api/demo/predict` (single validated prediction) and `POST /api/demo/loadtest` (synthetic batch with latency percentiles + per-pod spread). Reports `GET /api/status` (pods, HPAs, config). Validates uploads *before* they reach the LB. |
-| **Load balancer** | Go ([`load_balancer/main.go`](load_balancer/main.go)) | The self-implemented cloud-functionality component. An L7 reverse proxy: `POST /predict/` with `Content-Length ≥ SIZE_THRESHOLD` → GPU backend, else → CPU backend; `GET /models/` → CPU backend; `GET /health` → `{"status":"ok"}`. Logs every routing decision. Stateless, configured by 4 env vars. |
-| **AI worker — CPU** | Python / FastAPI + TensorFlow/Keras ([`cloud_ai_worker/main.py`](cloud_ai_worker/main.py)) | Inference microservice on the cost-effective node profile. Lazy-loads & caches Keras models, preprocesses the image to `224×224×3`, runs `model.predict`, returns probability + `node_type` + `worker_id` (pod hostname) + `execution_time`. Cheap `/health` endpoint for probes (no TF load). |
-| **AI worker — GPU** | same image as CPU worker | Same code, deployed with `NODE_TYPE="High-Performance GPU"` and a separate Deployment/Service/HPA so high-resolution images land on accelerated nodes without competing with the high-throughput CPU pool. |
+| **Frontend** | Python / Streamlit ([`cloud_frontend_app/app.py`](cloud_frontend_app/app.py)) | Clinician dashboard: upload a fundus image, pick a model (`GET /models/`), call `POST /predict/`, show the probability, the clinical band, and the infrastructure telemetry (`node_type`, `worker_id`, `execution_time`). Fully decoupled — it knows one backend URL and does no routing. |
+| **Orchestrator** | Go ([`orchestrator/`](orchestrator/)) | Control plane / Infrastructure-as-an-API. Owns one validated, persisted JSON config. `PUT /api/config` reconciles the cluster (`kubectl patch` the HPAs, `kubectl set env` the LB). Runs the demo (`POST /api/demo/predict`, `POST /api/demo/loadtest`), reports `GET /api/status`, validates uploads *before* the LB. Algorithm: [§4.3.4](#434-the-control-plane-algorithm--orchestrator-config-reconciliation). |
+| **Load balancer** | Go ([`load_balancer/main.go`](load_balancer/main.go)) | The self-implemented cloud-functionality component — an L7 reverse proxy. `POST /predict/` with `Content-Length ≥ SIZE_THRESHOLD` → GPU backend, else → CPU backend; `GET /models/` → CPU backend; `GET /health` → `{"status":"ok"}`. Logs every routing decision. Stateless, 4 env vars. Algorithm: [§4.3.1](#431-the-l7-routing-algorithm-go-reverse-proxy); full write-up: [§5.3](#53-the-self-implemented-cloud-functionality-component--the-go-l7-load-balancer). |
+| **AI worker — CPU** | Python / FastAPI + TensorFlow/Keras ([`cloud_ai_worker/main.py`](cloud_ai_worker/main.py)) | Inference microservice on the cost-effective node profile. Lazy-loads and caches Keras models, resizes the image to `224×224×3`, runs `model.predict`, returns the probability plus `node_type`, `worker_id` (pod hostname) and `execution_time`. Cheap `/health` (no TensorFlow load). Algorithm: [§4.3.5](#435-the-inference-algorithm--cnn-on-the-worker-fastapi--tensorflowkeras). |
+| **AI worker — GPU** | same image as the CPU worker | Same code, deployed with `NODE_TYPE="High-Performance GPU"` and its own Deployment/Service/HPA, so high-resolution images land on accelerated nodes without competing with the high-throughput CPU pool. |
 
 #### 4.2.2 Deployment / physical view
 
-* One Kubernetes namespace `glaucoma`; on minikube it is a single node, but the design is multi-node-ready (the CPU and GPU Deployments would carry different `nodeSelector`/taints in a real cluster).
+* One Kubernetes namespace, `glaucoma`. On minikube it is a single node, but the design is multi-node-ready — in a real cluster the CPU and GPU Deployments would carry different `nodeSelector`/taints.
 * **Deployments + Services:** `ai-worker-cpu`, `ai-worker-gpu`, `load-balancer`, `frontend` (NodePort `30501`), `orchestrator` (NodePort `30900`).
-* **PersistentVolume `models-pv` + PVC:** holds the `.h5`/`.keras` weights, mounted into worker pods. Model artifacts are deliberately *not* in Git (too large) — supplied via `models.zip` + [`prepare_models.sh`](prepare_models.sh) locally, or via PV / object storage / Git LFS in production.
+* **PersistentVolume `models-pv` + PVC:** holds the `.h5`/`.keras` weights, mounted into the worker pods. Model files are deliberately *not* in Git (too large) — supplied via `models.zip` + [`prepare_models.sh`](prepare_models.sh) locally, or via PV / object storage / Git LFS in production.
 * **RBAC:** the orchestrator runs under a ServiceAccount with `patch` rights on HPAs and Deployments in the namespace.
-* **Metrics Server:** required by HPA; on minikube enabled with `minikube addons enable metrics-server`.
+* **Metrics Server:** required by HPA; on minikube, `minikube addons enable metrics-server`.
 
-#### 4.2.3 Process / runtime view (request lifecycle)
+#### 4.2.3 Process / runtime view — the predict request lifecycle
 
-1. Clinician uploads an image in the Streamlit UI → `POST /predict/` (multipart: `file`, `model_name`) to the configured backend URL (orchestrator, or LB directly in the bare stack).
-2. **Orchestrator validation chain** (when used): size cap via a `limit+1` read (never buffers an oversized body) → declared content-type allowlist → magic-byte sniff (`http.DetectContentType`) → header-only `image.DecodeConfig` to enforce `max_image_pixels` (this is the decompression-bomb guard — a 1 KiB PNG that *claims* 100 000 × 100 000 is rejected without allocating the pixel buffer) → `model_name` sanitization (`[A-Za-z0-9._-]` only, no `..` segments). Failures map to `413` / `415` / `400`.
-3. Orchestrator forwards to the **load balancer**, which reads `Content-Length`: ≥ threshold → GPU `ReverseProxy`, else → CPU `ReverseProxy`; logs `[route] POST /predict/ (<n> bytes) -> CPU|GPU`.
-4. The pool's **Kubernetes Service** (kube-proxy) forwards to one Ready worker pod (round-robin/random among replicas).
-5. **Worker:** `await file.read()` → resize to `224×224`, normalize to `[0,1]`, add batch dim → `get_model(model_name)` (cache hit, or load from PV on first use, `compile=False`) → `model.predict(x)[0][0]` → optional synthetic CPU burn for the HPA demo → JSON `{status, probability, node_type, worker_id, execution_time}`.
-6. Response bubbles back; the orchestrator wraps it with `{orchestrator:{validated:{…}, routed_to_pool:"cpu|gpu"}, upstream:{…}}`; the UI renders probability + clinical band + telemetry.
+1. **Upload.** The clinician uploads an image → `POST /predict/` (multipart: `file`, `model_name`) to the configured backend URL — the orchestrator, or the LB directly in the bare stack.
+2. **Validate** (when the orchestrator is in front). Size cap → content-type allowlist → magic-byte sniff → header-only dimension check → `model_name` sanitization. The exact chain is in [§4.3.4](#434-the-control-plane-algorithm--orchestrator-config-reconciliation) step 4. Failures → `413` / `415` / `400`.
+3. **Route.** The orchestrator forwards to the load balancer, which reads `Content-Length`: `≥ threshold` → GPU proxy, else → CPU proxy. It logs `[route] POST /predict/ (<n> bytes) -> CPU|GPU`.
+4. **Pick a pod.** The pool's Kubernetes Service (kube-proxy) forwards to one Ready worker pod (round-robin / random among the replicas).
+5. **Infer.** The worker reads the bytes → resizes to `224×224`, normalizes to `[0,1]`, adds a batch dimension → `get_model(model_name)` (cache hit, or load from the PV on first use) → `model.predict(x)[0][0]` → optional synthetic CPU burn for the HPA demo → returns `{status, probability, node_type, worker_id, execution_time}`.
+6. **Return.** The orchestrator wraps the response as `{orchestrator:{validated:{…}, routed_to_pool:"cpu|gpu"}, upstream:{…}}`; the UI shows the probability, the clinical band and the telemetry.
 
 #### 4.2.4 Scaling / control view
 
-* **Metrics Server** scrapes pod CPU.
-* **HPA `ai-worker-cpu`:** 1 → 5 replicas, target ≈ 70 % CPU. **HPA `ai-worker-gpu`:** 1 → 3 replicas, target ≈ 75 % CPU. (Defaults — all four numbers are runtime-tunable through the orchestrator within hard bounds `[0,50]` replicas, `[1,100]` % utilization.)
-* Scale-up is not instant; until new pods are `Ready`, traffic stays on existing pods. Scale-down waits for the stabilization window. (For local minikube demos the workers set `LOAD_TEST_CPU_BURN_SECONDS=0.8` so inference creates measurable CPU pressure for the CPU-metric HPA; set to `0` for inference-only runs.)
-* **Orchestrator** is the human-facing control loop on top: `PUT /api/config` validates the *merged* config, persists it to `/var/lib/orchestrator/config.json`, and an `OnChange` hook runs `kubectl patch hpa …` and `kubectl set env deployment/load-balancer SIZE_THRESHOLD=…`. Reconcile errors are logged (`WARN`) but the API still returns the new config; `POST /api/config/apply` force-reconciles; `POST /api/config/reset` restores defaults. Behaviour under failures is catalogued in [`EDGE_CASES.md`](EDGE_CASES.md).
+* **Metrics Server** scrapes pod CPU. **HPA `ai-worker-cpu`:** 1 → 5 replicas at ≈70 % CPU. **HPA `ai-worker-gpu`:** 1 → 3 replicas at ≈75 % CPU. All four numbers are runtime-tunable through the orchestrator, within hard bounds (`[0,50]` replicas, `[1,100]` % utilization).
+* Scale-up is not instant — until the new pods are `Ready`, traffic stays on the existing pods. Scale-down waits for the stabilization window. For minikube demos the workers set `LOAD_TEST_CPU_BURN_SECONDS=0.8` so inference creates measurable CPU pressure; set it to `0` for inference-only runs.
+* The **orchestrator** is the human-facing control loop on top. `PUT /api/config` validates the merged config, persists it, and an `OnChange` hook runs `kubectl patch hpa …` + `kubectl set env deployment/load-balancer SIZE_THRESHOLD=…`. Reconcile errors are logged at `WARN` but the API still returns the new config; `/api/config/apply` force-reconciles; `/api/config/reset` restores defaults. Failure behaviour is catalogued in [`EDGE_CASES.md`](EDGE_CASES.md).
 
 ### 4.3 Detailed technical analysis of the chosen technology and its algorithms
 
-The self-implemented cloud-functionality component is the **Layer-7 resource-aware load balancer** (Go). Its decision is small, so the "algorithm" is best described together with the surrounding mechanics of the three cooperating layers.
+The self-implemented component is the **Layer-7 resource-aware load balancer** (Go). Its decision is small, so we describe the "algorithm" together with the three cooperating layers.
 
 #### 4.3.1 The L7 routing algorithm (Go reverse proxy)
 
@@ -216,14 +171,13 @@ mux.HandleFunc("/models/", /* always */ cpuProxy.ServeHTTP)
 mux.HandleFunc("/health",  /* returns {"status":"ok"} */)
 ```
 
-* **Why `Content-Length`:** it is available in the request headers *before* the body is read, so the routing decision is O(1) and requires no buffering. The file size is a good proxy for "this is a high-resolution fundus image that would put memory pressure on a CPU worker if many arrive at once" — the kind of request we want on the GPU-profile pool.
-* **Why a custom proxy over an Ingress controller:** vanilla Kubernetes primitives have no body-size matcher; an Ingress-based equivalent needs a 100 MB controller plus custom Lua/`EnvoyFilter`. The trade-off table is in [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md). Cost of our choice: no TLS termination, no retry/circuit-breaker, single replica (no HPA on the LB itself) — acceptable for the scope, listed in §5.2.
-* **`httputil.ReverseProxy`:** Go's standard library proxy. We override the `Director` so the upstream `Host` header is the backend's host (correct virtual-host behaviour); the path and body are forwarded untouched. On a backend failure the default behaviour is a `502` — we do not retry (deliberate, documented limitation).
-* **Statelessness & config:** four env vars only — `CPU_BACKEND`, `GPU_BACKEND`, `SIZE_THRESHOLD`, `PORT`. No persistent state, so the LB pod is freely restartable; the orchestrator changes `SIZE_THRESHOLD` via `kubectl set env`, which triggers a rolling restart of the (single-replica) LB Deployment — a brief blip, noted in [`EDGE_CASES.md`](EDGE_CASES.md).
+* **Why `Content-Length`?** It is in the request headers *before* the body is read, so the decision is O(1) with no buffering. File size is a good proxy for "a high-resolution fundus image that would put memory pressure on a CPU worker if many arrive at once" — the request we want on the GPU-profile pool.
+* **`httputil.ReverseProxy`.** Go's standard-library proxy. We override the `Director` so the outgoing `Host` header is the backend's host (correct virtual hosting); the path and body are forwarded untouched. A backend failure yields a `502` — we do not retry (a deliberate, documented limitation; see [§5.2](#52-limitations--boundaries-of-the-solution)).
+* **Statelessness and config.** Four env vars only — `CPU_BACKEND`, `GPU_BACKEND`, `SIZE_THRESHOLD`, `PORT`. No persistent state, so the LB pod is freely restartable; the orchestrator changes `SIZE_THRESHOLD` via `kubectl set env`, which triggers a brief rolling restart of the (single-replica) LB.
 
 #### 4.3.2 The L4 layer — Kubernetes `Service` / kube-proxy
 
-Each pool has a `ClusterIP` Service. kube-proxy programs iptables/IPVS rules that distribute connections **across the Ready pods of that pool** (effectively round-robin / random). It is content-agnostic — it never sees the HTTP body. This is exactly why the L7 LB is needed *in front of it*: the LB picks the **pool**, kube-proxy picks the **pod**.
+Each pool has a `ClusterIP` Service. kube-proxy programs iptables/IPVS rules that spread connections **across the Ready pods of that pool** (round-robin / random). It is content-agnostic — it never sees the HTTP body. That is exactly why the L7 LB sits *in front of it*: the LB picks the **pool**, kube-proxy picks the **pod**.
 
 #### 4.3.3 The autoscaling control algorithm — HorizontalPodAutoscaler
 
@@ -233,100 +187,176 @@ The HPA controller periodically reads each pool's average CPU utilization from t
 desiredReplicas = ceil( currentReplicas × ( currentMetricValue / targetMetricValue ) )
 ```
 
-clamped to `[minReplicas, maxReplicas]` (CPU pool `[1,5]` @ 70 %, GPU pool `[1,3]` @ 75 % by default). Scale-up is prompt but bounded by pod start time; scale-down is delayed by a stabilization window to avoid flapping. HPA is **orthogonal** to routing — it changes *how many* pods exist per pool, never *which* pod or pool a request hits. Together: **LB = which pool, kube-proxy = which pod, HPA = how many pods.**
+clamped to `[minReplicas, maxReplicas]` (CPU `[1,5]` @ 70 %, GPU `[1,3]` @ 75 % by default). Scale-up is prompt but bounded by pod start time; scale-down is delayed by a stabilization window to avoid flapping. HPA is **orthogonal** to routing — it changes *how many* pods exist per pool, never *which* pod or pool a request hits. (The three layers in one line: **LB = which pool, kube-proxy = which pod, HPA = how many pods.**)
 
 #### 4.3.4 The control-plane algorithm — orchestrator config reconciliation
 
-1. `PUT /api/config` accepts a *partial* JSON body; unknown fields → `422` (so typos surface).
-2. The patch is merged onto the current config; **validation runs on the merged result** against hard bounds and cross-field invariants (e.g. `cpu_min_replicas ≤ cpu_max_replicas`, `allowed_content_types` must each start with `image/`). Any violation → `422`, server state unchanged. A field explicitly set to `null` is a no-op.
-3. On success the new config is written atomically to disk, then an `OnChange` hook reconciles the cluster:
-   * `kubectl patch hpa ai-worker-cpu / ai-worker-gpu` with new min/max/target,
-   * `kubectl set env deployment/load-balancer SIZE_THRESHOLD=<n>`.
-   Reconcile errors are logged at `WARN`; the API still returns the new (now-persisted) config. `POST /api/config/apply` re-runs the reconciliation (useful right after deploy, or if `kubectl` was unavailable earlier); it returns `207 Multi-Status` with a per-step error list if any patch failed.
-4. **Upload safeguard chain** on `POST /api/demo/predict` (run before forwarding to the LB): size cap (`limit+1` read) → declared content-type allowlist → magic-byte sniff → header-only `image.DecodeConfig` for `max_image_pixels` (decompression-bomb guard) → `model_name` sanitization. Errors → `413` / `415` / `400`.
-5. **Synthetic load test** `POST /api/demo/loadtest`: fires `n` predict requests at the LB with the configured `concurrency` (both capped: `n ≤ max_loadtest_requests`, `concurrency ≤ max_loadtest_concurrency`, otherwise `422` *before* any traffic). If no `image_base64` is supplied it generates a tiny synthetic JPEG (zero prerequisites). It reports duration, throughput (RPS), success/failure counts, latency percentiles (`min/avg/p50/p95/p99/max`), `node_distribution`, `worker_spread` (requests per worker pod — the key signal that HPA actually spread load), and an HTTP `status_codes` breakdown. Client disconnect → in-flight requests finish, no new ones launched, partial report returned.
+1. **Accept the change.** `PUT /api/config` takes a *partial* JSON body. Unknown fields → `422` (so typos surface). A field explicitly set to `null` is a no-op.
+2. **Validate the result.** The patch is merged onto the current config, then validation runs **on the merged result** — hard bounds plus cross-field rules (e.g. `cpu_min_replicas ≤ cpu_max_replicas`; each `allowed_content_types` entry must start with `image/`). Any violation → `422`, server state unchanged.
+3. **Persist, then reconcile.** On success the config is written atomically to disk, then an `OnChange` hook reconciles the cluster: `kubectl patch hpa ai-worker-cpu / ai-worker-gpu` (new min/max/target) and `kubectl set env deployment/load-balancer SIZE_THRESHOLD=<n>`. Reconcile errors are logged at `WARN`; the API still returns the now-persisted config. `POST /api/config/apply` re-runs the reconciliation (useful right after deploy, or if `kubectl` was unavailable earlier) and returns `207 Multi-Status` with a per-step error list if any patch failed.
+4. **Upload safeguard chain** (on `POST /api/demo/predict`, run before forwarding to the LB):
+   1. size cap via a `limit+1` read — never buffers an oversized body → `413`;
+   2. declared content-type must be in the allowlist → `415`;
+   3. magic-byte sniff (`http.DetectContentType`) → `415`;
+   4. header-only `image.DecodeConfig` to enforce `max_image_pixels` — **the decompression-bomb guard**: a 1 KiB PNG that *claims* 100 000 × 100 000 is rejected without allocating the pixel buffer → `413`;
+   5. `model_name` sanitization — `[A-Za-z0-9._-]` only, no `..` segments → `400`.
+5. **Synthetic load test** (`POST /api/demo/loadtest`):
+   * fires `n` predict requests at the LB with the configured `concurrency`. Both are capped — `n ≤ max_loadtest_requests`, `concurrency ≤ max_loadtest_concurrency` — else `422` *before any traffic*;
+   * if no `image_base64` is supplied it generates a tiny synthetic JPEG (zero prerequisites);
+   * reports duration, throughput (RPS), success/failure counts, latency percentiles (`min/avg/p50/p95/p99/max`), `node_distribution`, `worker_spread` (requests per worker pod — the key signal that HPA actually spread the load), and an HTTP `status_codes` breakdown;
+   * a client disconnect lets in-flight requests finish, launches no new ones, and returns a partial report.
 
 #### 4.3.5 The inference algorithm — CNN on the worker (FastAPI + TensorFlow/Keras)
 
 | Step | Detail |
 |---|---|
-| **Model management** | Lazy loading + in-process cache (`MODEL_CACHE` dict). On the first request for a given filename the worker loads it from `MODEL_DIR` (the PV) with `load_model(path, compile=False)` — inference-only, so no optimizer state, less RAM, faster init. Subsequent requests are cache hits. Supported formats: `.h5`, `.keras`, TF SavedModel directories (`saved_model.pb`). `GET /models/` lists available files for the UI dropdown. |
-| **Preprocessing** | `PIL.Image.open(BytesIO(bytes)).convert("RGB")` (normalizes grayscale/RGBA inputs) → `resize((224,224))` (the CNN's expected input — typical for ResNet/VGG-style backbones) → `img_to_array(img) / 255.0` (normalize pixels to `[0,1]`) → `np.expand_dims(..., axis=0)` (batch dimension, final shape `(1, 224, 224, 3)`). Done entirely in memory; the upload is never written to disk. |
-| **Inference** | `model.predict(x)` returns a `(1,1)` array; the scalar is the glaucoma probability. We multiply by 100 for the UI. The CNN is a standard image classifier: stacked convolution + pooling feature extractor followed by dense layers ending in a sigmoid — the project consumes a *pre-trained* model file rather than training one (training is out of scope; this is the cloud-infrastructure project). |
-| **Telemetry** | Every response carries `node_type` (from the `NODE_TYPE` env var — "Standard CPU" vs "High-Performance GPU"), `worker_id` (`socket.gethostname()` = the Kubernetes pod name, the audit trail / scaling proof), and `execution_time` (server-measured inference latency). |
+| **Model management** | Lazy loading + an in-process cache (`MODEL_CACHE` dict). On the first request for a filename the worker loads it from `MODEL_DIR` (the PV) with `load_model(path, compile=False)` — inference-only, so no optimizer state, less RAM, faster init. Later requests are cache hits. Supports `.h5`, `.keras`, and TF SavedModel directories. `GET /models/` lists the available files for the UI dropdown. |
+| **Preprocessing** | `PIL.Image.open(BytesIO(bytes)).convert("RGB")` (normalizes grayscale/RGBA) → `resize((224,224))` (the CNN's expected input — typical for ResNet/VGG-style backbones) → `img_to_array(img) / 255.0` (normalize to `[0,1]`) → `np.expand_dims(..., axis=0)` (final shape `(1, 224, 224, 3)`). Done entirely in memory; the upload is never written to disk. |
+| **Inference** | `model.predict(x)` returns a `(1,1)` array; the scalar is the glaucoma probability (×100 for the UI). The CNN is a standard image classifier: stacked convolution + pooling feature extractor → dense layers → sigmoid. The project consumes a *pre-trained* model file; training is out of scope. |
+| **Telemetry** | Every response carries `node_type` (from `NODE_TYPE` — "Standard CPU" vs "High-Performance GPU"), `worker_id` (`socket.gethostname()` = the pod name — the audit trail and the scaling proof), and `execution_time` (server-measured inference latency). |
 | **Health** | `GET /health` returns `{status, node_type, worker_id, model_dir}` *without* touching TensorFlow, so readiness probes stay cheap while pods are scaling. |
-| **HPA demo aid** | `LOAD_TEST_CPU_BURN_SECONDS` (default `0`) optionally spins one core with deterministic FP work after `predict`, so on a CPU-metric HPA in minikube the load test produces measurable pressure. Production: leave at `0`. |
-| **Error handling** | Corrupted image, missing model, etc. are caught and returned as `{status:"error", message:…}` rather than crashing the worker. |
+| **HPA demo aid** | `LOAD_TEST_CPU_BURN_SECONDS` (default `0`) optionally spins one core with deterministic FP work after `predict`, so a CPU-metric HPA on minikube sees measurable pressure. In production, leave it at `0`. |
+| **Error handling** | A corrupted image, a missing model, etc. are caught and returned as `{status:"error", message:…}` rather than crashing the worker. |
 
 ---
 
 ## 5. Detailed Technical Implementation Description
 
-### 5.1 Component inventory and key files
+### 5.1 Component inventory
 
 | Component | Language / framework | Key source files | Container |
 |---|---|---|---|
-| Frontend | Python 3.10+, Streamlit, Requests | [`cloud_frontend_app/app.py`](cloud_frontend_app/app.py), [`requirements.txt`](cloud_frontend_app/requirements.txt) | [`cloud_frontend_app/Dockerfile`](cloud_frontend_app/Dockerfile) |
-| Orchestrator | Go (stdlib `net/http`, `image`, `os/exec`→`kubectl`) | [`orchestrator/main.go`](orchestrator/main.go) (entry, flags, graceful shutdown), [`config.go`](orchestrator/config.go) (defaults, validation, persistence), [`validate.go`](orchestrator/validate.go) (upload safeguards), [`k8s.go`](orchestrator/k8s.go) (`kubectl` wrappers), [`handlers.go`](orchestrator/handlers.go) (`/api/config`, `/api/status`, `/api/demo/*`), [`demo.go`](orchestrator/demo.go) (load-test runner), [`server.go`](orchestrator/server.go) (routes/middleware) | [`orchestrator/Dockerfile`](orchestrator/Dockerfile) |
-| Load balancer | Go (stdlib `net/http/httputil`) | [`load_balancer/main.go`](load_balancer/main.go) (~80 LOC), [`main_test.go`](load_balancer/main_test.go) | [`load_balancer/Dockerfile`](load_balancer/Dockerfile) (multi-stage Alpine, ~10 MB) |
-| AI worker (CPU & GPU) | Python, FastAPI/uvicorn, TensorFlow/Keras, Pillow, NumPy | [`cloud_ai_worker/main.py`](cloud_ai_worker/main.py), [`requirements.txt`](cloud_ai_worker/requirements.txt), [`tests/test_main.py`](cloud_ai_worker/tests/test_main.py) | [`cloud_ai_worker/Dockerfile`](cloud_ai_worker/Dockerfile) |
-| K8s manifests | YAML | [`k8s/namespace.yaml`](k8s/namespace.yaml), [`models-pv.yaml`](k8s/models-pv.yaml), [`ai-worker-cpu.yaml`](k8s/ai-worker-cpu.yaml), [`ai-worker-gpu.yaml`](k8s/ai-worker-gpu.yaml), [`load-balancer.yaml`](k8s/load-balancer.yaml), [`frontend.yaml`](k8s/frontend.yaml), [`ai-worker-hpa.yaml`](k8s/ai-worker-hpa.yaml), [`orchestrator.yaml`](k8s/orchestrator.yaml) (+ RBAC), [`deploy.sh`](k8s/deploy.sh) | — |
+| Frontend | Python 3.10+, Streamlit, Requests | [`cloud_frontend_app/app.py`](cloud_frontend_app/app.py), [`requirements.txt`](cloud_frontend_app/requirements.txt) | [`Dockerfile`](cloud_frontend_app/Dockerfile) |
+| Orchestrator | Go (stdlib `net/http`, `image`, `os/exec`→`kubectl`) | [`main.go`](orchestrator/main.go) (entry, flags, graceful shutdown), [`config.go`](orchestrator/config.go) (defaults/validation/persistence), [`validate.go`](orchestrator/validate.go) (upload safeguards), [`k8s.go`](orchestrator/k8s.go) (`kubectl` wrappers), [`handlers.go`](orchestrator/handlers.go), [`demo.go`](orchestrator/demo.go) (load-test runner), [`server.go`](orchestrator/server.go) (routes/middleware) | [`Dockerfile`](orchestrator/Dockerfile) |
+| Load balancer | Go (stdlib `net/http/httputil`) | [`load_balancer/main.go`](load_balancer/main.go) (~80 LOC), [`main_test.go`](load_balancer/main_test.go) | [`Dockerfile`](load_balancer/Dockerfile) (multi-stage Alpine, ~10 MB) |
+| AI worker (CPU & GPU) | Python, FastAPI/uvicorn, TensorFlow/Keras, Pillow, NumPy | [`cloud_ai_worker/main.py`](cloud_ai_worker/main.py), [`requirements.txt`](cloud_ai_worker/requirements.txt), [`tests/test_main.py`](cloud_ai_worker/tests/test_main.py) | [`Dockerfile`](cloud_ai_worker/Dockerfile) |
+| K8s manifests | YAML | [`namespace.yaml`](k8s/namespace.yaml), [`models-pv.yaml`](k8s/models-pv.yaml), [`ai-worker-cpu.yaml`](k8s/ai-worker-cpu.yaml), [`ai-worker-gpu.yaml`](k8s/ai-worker-gpu.yaml), [`load-balancer.yaml`](k8s/load-balancer.yaml), [`frontend.yaml`](k8s/frontend.yaml), [`ai-worker-hpa.yaml`](k8s/ai-worker-hpa.yaml), [`orchestrator.yaml`](k8s/orchestrator.yaml) (+ RBAC), [`deploy.sh`](k8s/deploy.sh) | — |
 | Local stack | Docker Compose | [`docker-compose.yml`](docker-compose.yml), [`prepare_models.sh`](prepare_models.sh) | — |
 | Tests / experiment | Bash + `go test` + `pytest` | [`test_all.sh`](test_all.sh), [`test_load_balancer.sh`](test_load_balancer.sh), [`test_routing_with_logs.sh`](test_routing_with_logs.sh), [`test_scalability.sh`](test_scalability.sh), [`test_scalability_e2e.sh`](test_scalability_e2e.sh) | — |
 
 ### 5.2 Limitations / boundaries of the solution
 
-Stated explicitly (full failure catalogue in [`EDGE_CASES.md`](EDGE_CASES.md)):
+The full failure catalogue is in [`EDGE_CASES.md`](EDGE_CASES.md). The main boundaries:
 
-* **The load balancer is single-replica and has no HPA of its own.** If it becomes the bottleneck it does not scale; a restart (rolling update, or an `SIZE_THRESHOLD` change) makes it briefly unavailable — there is no PodDisruptionBudget. It also does **no** retry / circuit-breaker (a backend failure → `502`) and **no** TLS termination.
-* **The orchestrator is single-replica** (`Recreate` strategy, because it mounts an RWO PVC for its config). It is a control-plane convenience, not a hardened gateway; if overloaded it slows API/demo calls. Its `kubectl`-based reconciliation is best-effort — if `kubectl` is unavailable the API still serves config + demo, `kubectl_available:false` is reported, and `POST /api/config/apply` must be re-run later.
-* **No application-level admission control / queueing.** The system does **not** emit `429 Too Many Requests`; under overload, latency grows and timeouts/errors appear. Kubernetes Services have no HTTP timeout — timeouts arise client-side, or via the orchestrator's `UpstreamTimeoutSeconds` (→ `502`).
-* **Kubernetes is not load-aware at the application level.** A `Ready` pod can receive another request even while busy with many; HPA reacts to CPU%, not in-flight request count. If `maxReplicas` is hit, no more pods are added (the orchestrator can raise it at runtime, but it is still a hard ceiling at any moment). If the cluster runs out of CPU/RAM, new pods stay `Pending` and effective capacity does not grow.
-* **"GPU" is a profile, not real hardware in this submission.** The GPU worker runs the same image with a different `NODE_TYPE` and its own Deployment/Service/HPA; on minikube there is no actual accelerator and HPA is driven by CPU metrics (hence the optional `LOAD_TEST_CPU_BURN_SECONDS`). The architecture is ready for real GPU nodes (`nodeSelector`/taints) but that is outside this environment.
-* **No medical-accuracy claims.** The project validates *cloud behaviour* (routing, scaling, tunability), not diagnostic quality. The CNN model file is consumed pre-trained; model weights are not in Git (delivered via `models.zip`/PV/object storage/LFS).
+* **The load balancer is single-replica and has no HPA of its own.** If it becomes the bottleneck it does not scale. A restart (a rolling update, or a `SIZE_THRESHOLD` change) makes it briefly unavailable — there is no PodDisruptionBudget. It does **no** retry / circuit-breaker (a backend failure → `502`) and **no** TLS termination.
+* **The orchestrator is single-replica** (`Recreate` strategy, because it mounts an RWO PVC for its config). It is a control-plane convenience, not a hardened gateway; if overloaded it slows API/demo calls. Its `kubectl`-based reconciliation is best-effort — if `kubectl` is unavailable the API still serves config + demo, `kubectl_available:false` is reported, and `/api/config/apply` must be re-run later.
+* **No application-level admission control or queueing.** The system does **not** emit `429 Too Many Requests`; under overload, latency grows and timeouts/errors appear. Kubernetes Services have no HTTP timeout — timeouts arise client-side, or via the orchestrator's `UpstreamTimeoutSeconds` (→ `502`).
+* **Kubernetes is not load-aware at the application level.** A `Ready` pod can receive another request even while busy with many; HPA reacts to CPU%, not to in-flight request count. At `maxReplicas` no more pods are added (it is raisable at runtime, but still a hard ceiling at any moment); if the cluster runs out of CPU/RAM, new pods stay `Pending`.
+* **"GPU" is a profile, not real hardware in this submission.** The GPU worker runs the same image with a different `NODE_TYPE` and its own Deployment/Service/HPA; on minikube there is no accelerator and the HPA is CPU-driven (hence the optional `LOAD_TEST_CPU_BURN_SECONDS`). The architecture is ready for real GPU nodes (`nodeSelector`/taints) — that is outside this environment.
+* **No medical-accuracy claims.** We validate *cloud behaviour* (routing, scaling, tunability), not diagnostic quality. The CNN is consumed pre-trained; the weights are not in Git (delivered via `models.zip` / PV / object storage / Git LFS).
 * **Single-namespace, single-node demo target (minikube).** Multi-tenancy, network policies, secrets management, persistent metrics/logging stacks, and TLS are out of scope.
 
-### 5.3 The self-implemented cloud-functionality component (in depth): the Go L7 Load Balancer (Docker container)
+### 5.3 The self-implemented cloud-functionality component — the Go L7 Load Balancer
 
-This is the component the assignment asks us to describe in detail as *our own implementation of a chosen cloud functionality* — here, **application-aware (Layer-7) load balancing**, packaged as a Docker container and run as a Kubernetes Deployment.
+This is the component the assignment asks us to describe in detail as *our own implementation of a chosen cloud functionality*: **application-aware (Layer-7) load balancing**, packaged as a Docker container and run as a Kubernetes Deployment. It turns "route by request body size to a different instance class" — something a Kubernetes L4 `Service` cannot do, and managed Ingress controllers only do via custom plugins — into a first-class, four-line decision. The routing algorithm itself is in [§4.3.1](#431-the-l7-routing-algorithm-go-reverse-proxy); the build-vs-buy comparison is in [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md).
 
-* **What cloud functionality it implements:** content-aware request routing across heterogeneous backend pools — something Kubernetes' built-in L4 `Service` cannot do and managed Ingress controllers only do via custom plugins. It turns "route by request body size to a different instance class" into a first-class, four-line decision.
-* **Internal design:**
-  * `main()` reads four env vars (`CPU_BACKEND` default `http://ai-worker-cpu:8001`, `GPU_BACKEND` default `http://ai-worker-gpu:8001`, `SIZE_THRESHOLD` default `2_500_000`, `PORT` default `8080`), parses the backend URLs, and builds two `*httputil.ReverseProxy` instances via `newProxy(target)`.
-  * `newProxy` wraps `httputil.NewSingleHostReverseProxy` and overrides the `Director` so the outgoing `Host` header equals the target host (correct virtual hosting); request path and body are forwarded verbatim.
-  * Three handlers on a `http.ServeMux`: `/predict/` (the `Content-Length` branch → GPU or CPU proxy, with a `[route]` log line), `/models/` (always CPU proxy, logged), `/health` (returns `{"status":"ok"}` with `Content-Type: application/json`).
-  * `http.ListenAndServe(":"+port, mux)` — no extra middleware, no state.
-* **Containerization:** [`load_balancer/Dockerfile`](load_balancer/Dockerfile) is a multi-stage build — a Go builder stage compiles a static binary, the final stage is `alpine` with just that binary → ~10 MB image, milliseconds cold start. Built with `docker build -t glaucoma/load-balancer:latest ./load_balancer`.
-* **Kubernetes integration:** [`k8s/load-balancer.yaml`](k8s/load-balancer.yaml) defines a Deployment (`replicas: 1`, container port `8080`, env vars pointing at the worker Services) and a `ClusterIP` Service `load-balancer:8080`. The orchestrator mutates `SIZE_THRESHOLD` at runtime with `kubectl set env deployment/load-balancer SIZE_THRESHOLD=<n>`, which triggers a rolling restart.
-* **Local parity:** the same container runs under [`docker-compose.yml`](docker-compose.yml) (exposed on host `:8000` → container `:8080`) so developers exercise the *identical* routing code without a cluster.
-* **Observability:** stdout logs every decision (`[route] POST /predict/ (124987 bytes) -> CPU`, `[route] POST /predict/ (3500000 bytes) -> GPU`, `[route] GET /models/ -> CPU`), so routing is auditable via `docker compose logs -f load-balancer` or `kubectl -n glaucoma logs -f deployment/load-balancer`. Unit-tested in [`load_balancer/main_test.go`](load_balancer/main_test.go) (threshold logic, `/health`, env handling, a routing benchmark).
+#### Internal design (`load_balancer/main.go`, ~80 LOC)
+
+1. **Configuration — four env vars, nothing else:**
+
+   | Variable | Default | Meaning |
+   |---|---|---|
+   | `CPU_BACKEND` | `http://ai-worker-cpu:8001` | URL of the CPU worker pool's Service. |
+   | `GPU_BACKEND` | `http://ai-worker-gpu:8001` | URL of the GPU worker pool's Service. |
+   | `SIZE_THRESHOLD` | `2_500_000` | Bytes; requests at or above this go to the GPU pool. |
+   | `PORT` | `8080` | Port to listen on. |
+
+2. **Two reverse proxies.** `newProxy(target)` wraps `httputil.NewSingleHostReverseProxy` and overrides the `Director` so the outgoing `Host` header equals the target host (correct virtual hosting); the path and body pass through untouched. One proxy per backend.
+3. **Three handlers on a `http.ServeMux`:**
+   * `POST /predict/` — the `Content-Length` branch (GPU proxy if `≥ SIZE_THRESHOLD`, else CPU proxy), with a `[route]` log line;
+   * `GET /models/` — always the CPU proxy (also logged);
+   * `GET /health` — returns `{"status":"ok"}` with `Content-Type: application/json`.
+4. **Serve.** `http.ListenAndServe(":"+port, mux)` — no extra middleware, no persistent state.
+
+#### Containerization
+
+[`load_balancer/Dockerfile`](load_balancer/Dockerfile) is a multi-stage build: a Go builder stage compiles a static binary; the final stage is `alpine` with just that binary → ~10 MB image, millisecond cold start. Built with `docker build -t glaucoma/load-balancer:latest ./load_balancer`.
+
+#### Kubernetes integration
+
+[`k8s/load-balancer.yaml`](k8s/load-balancer.yaml) defines a Deployment (`replicas: 1`, container port `8080`, env vars pointing at the worker Services) and a `ClusterIP` Service `load-balancer:8080`. The orchestrator changes `SIZE_THRESHOLD` at runtime with `kubectl set env deployment/load-balancer SIZE_THRESHOLD=<n>`, which triggers a rolling restart.
+
+#### Local parity
+
+The same container also runs under [`docker-compose.yml`](docker-compose.yml) (host `:8000` → container `:8080`), so developers exercise the *identical* routing code without a cluster.
+
+#### Observability & tests
+
+stdout logs every decision — `[route] POST /predict/ (124987 bytes) -> CPU`, `[route] POST /predict/ (3500000 bytes) -> GPU`, `[route] GET /models/ -> CPU` — auditable via `docker compose logs -f load-balancer` or `kubectl -n glaucoma logs -f deployment/load-balancer`. Unit-tested in [`load_balancer/main_test.go`](load_balancer/main_test.go): threshold logic, `/health`, env handling, and a routing benchmark.
 
 ### 5.4 Worker, orchestrator, frontend implementation notes
 
-* **Worker** ([`cloud_ai_worker/main.py`](cloud_ai_worker/main.py)) — see §4.3.5. FastAPI app with `GET /models/`, `GET /health`, `POST /predict/`. Env: `PORT`, `MODEL_DIR`, `NODE_TYPE`, `TF_CPP_MIN_LOG_LEVEL`, `LOAD_TEST_CPU_BURN_SECONDS`. The CPU and GPU Deployments use this same image with different `NODE_TYPE` and separate HPAs. Models come from the `models-pv` PersistentVolume.
-* **Orchestrator** ([`orchestrator/`](orchestrator/)) — see §4.3.4. Flags/env: `-listen`/`ORCH_LISTEN` (`:9000`), `-config`/`ORCH_CONFIG` (`/var/lib/orchestrator/config.json`), `-lb-url`/`ORCH_LB_URL` (`http://load-balancer:8080`), `-namespace`/`ORCH_NAMESPACE` (`glaucoma`), `-kubectl`/`ORCH_KUBECTL`, `-no-kube`/`ORCH_NO_KUBE` (config-only mode for local runs), `-read-timeout` (`30s`), `-write-timeout` (`120s`, long for load tests). Config fields and bounds: `size_threshold_bytes` `[1024, 1 GiB]` default 2 500 000; `cpu_min/max_replicas` & `gpu_min/max_replicas` `[0,50]` default 1/5 and 1/3; `cpu/gpu_target_utilization` `[1,100]%` default 70/75; `max_upload_bytes` `[4 KiB,64 MiB]` default 16 MiB; `max_image_pixels` `[4096, 64 000 000]` default 16 000 000; `allowed_content_types` default `image/jpeg,image/png`; `max_loadtest_requests` `[1,5000]` default 200; `max_loadtest_concurrency` `[1,256]` default 16; `upstream_timeout_seconds` `[1,600]` default 60. Endpoints: `GET /healthz`, `GET /api/config`, `PUT /api/config`, `POST /api/config/apply`, `POST /api/config/reset`, `GET /api/status`, `POST /api/demo/predict`, `POST /api/demo/loadtest`.
-* **Frontend** ([`cloud_frontend_app/app.py`](cloud_frontend_app/app.py)) — wide-layout Streamlit dashboard; env `BACKEND_URL`. Calls `GET /models/` to populate the model dropdown and `POST /predict/` on upload; renders the probability, the clinical band (Low Risk / Suspicious / High Risk), and the cloud telemetry (`node_type`, `worker_id`, `execution_time`). Stateless, fully decoupled — it never routes.
+#### Worker — [`cloud_ai_worker/main.py`](cloud_ai_worker/main.py)
+
+A FastAPI app; the inference algorithm is in [§4.3.5](#435-the-inference-algorithm--cnn-on-the-worker-fastapi--tensorflowkeras). The CPU and GPU pools run **the same image** — they differ only in the `NODE_TYPE` value, and each has its own Deployment/Service/HPA. Model files are read from the `models-pv` PersistentVolume.
+
+Endpoints: `GET /models/` (list available model files), `GET /health` (cheap, no TensorFlow), `POST /predict/` (run inference).
+
+Environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `PORT` | Port to listen on. |
+| `MODEL_DIR` | Directory the model files are read from (the PV mount). |
+| `NODE_TYPE` | Label returned in every response — `"Standard CPU"` or `"High-Performance GPU"`. |
+| `TF_CPP_MIN_LOG_LEVEL` | TensorFlow log verbosity. |
+| `LOAD_TEST_CPU_BURN_SECONDS` | Extra synthetic CPU work after each prediction, so the HPA demo on minikube sees real load. `0` in production. |
+
+#### Orchestrator — [`orchestrator/`](orchestrator/)
+
+The control-plane REST API; the reconciliation algorithm is in [§4.3.4](#434-the-control-plane-algorithm--orchestrator-config-reconciliation).
+
+Endpoints: `GET /healthz`, `GET /api/config`, `PUT /api/config`, `POST /api/config/apply`, `POST /api/config/reset`, `GET /api/status`, `POST /api/demo/predict`, `POST /api/demo/loadtest`.
+
+Command-line flags (each also has an env-var form):
+
+| Flag / env | Default | Meaning |
+|---|---|---|
+| `-listen` / `ORCH_LISTEN` | `:9000` | Address to listen on. |
+| `-config` / `ORCH_CONFIG` | `/var/lib/orchestrator/config.json` | Where the config JSON is persisted. |
+| `-lb-url` / `ORCH_LB_URL` | `http://load-balancer:8080` | Load-balancer URL the demo sends traffic to. |
+| `-namespace` / `ORCH_NAMESPACE` | `glaucoma` | Kubernetes namespace it reconciles. |
+| `-kubectl` / `ORCH_KUBECTL` | `kubectl` | Path to the `kubectl` binary. |
+| `-no-kube` / `ORCH_NO_KUBE` | off | Config-only mode — serves the API without touching the cluster (for local runs). |
+| `-read-timeout` | `30s` | HTTP read timeout. |
+| `-write-timeout` | `120s` | HTTP write timeout (long, so load tests can finish). |
+
+Config fields, allowed range, and default:
+
+| Field | Range | Default |
+|---|---|---|
+| `size_threshold_bytes` — CPU↔GPU routing threshold | `1 KiB … 1 GiB` | `2 500 000` |
+| `cpu_min_replicas` / `cpu_max_replicas` | `0 … 50` | `1` / `5` |
+| `gpu_min_replicas` / `gpu_max_replicas` | `0 … 50` | `1` / `3` |
+| `cpu_target_utilization` / `gpu_target_utilization` | `1 … 100 %` | `70` / `75` |
+| `max_upload_bytes` — largest accepted upload | `4 KiB … 64 MiB` | `16 MiB` |
+| `max_image_pixels` — decompression-bomb guard | `4 096 … 64 000 000` | `16 000 000` |
+| `allowed_content_types` | each must start with `image/` | `image/jpeg, image/png` |
+| `max_loadtest_requests` | `1 … 5 000` | `200` |
+| `max_loadtest_concurrency` | `1 … 256` | `16` |
+| `upstream_timeout_seconds` | `1 … 600` | `60` |
+
+#### Frontend — [`cloud_frontend_app/app.py`](cloud_frontend_app/app.py)
+
+A Streamlit dashboard. It reads one env var, `BACKEND_URL`. On load it calls `GET /models/` to fill the model dropdown; on upload it calls `POST /predict/` and shows the probability, the clinical band (Low Risk / Suspicious / High Risk) and the infrastructure telemetry (`node_type`, `worker_id`, `execution_time`). It is stateless and does no routing itself — it only knows the one backend URL.
 
 ### 5.5 Step-by-step: configuring and running the whole system
 
 #### Option A — Local development (Docker Compose)
 
 ```bash
-# 0. Prerequisites: Docker + Docker Compose installed.
-# 1. Provide the model weights (not in Git): put models.zip in the repo root, then
+# 0. Prerequisites: Docker + Docker Compose.
+# 1. Provide model weights (not in Git): put models.zip in the repo root, then
 ./prepare_models.sh                 # extracts models.zip → ./models
 # 2. Build and start the whole stack (frontend, load balancer, CPU worker, GPU worker)
 docker compose up --build
-# 3. Open the UI and the LB API
-#    Frontend:        http://localhost:8501
-#    Load Balancer:   http://localhost:8000   (GET /health, POST /predict/, GET /models/)
-# 4. Watch routing decisions live (separate terminal)
+#    Frontend:      http://localhost:8501
+#    Load Balancer: http://localhost:8000   (GET /health, POST /predict/, GET /models/)
+# 3. Watch routing decisions live
 docker compose logs -f load-balancer
-# 5. Verify routing with the helper script (generates a ~500 KB and a ~3.5 MB image)
-docker compose up --build -d
-./test_load_balancer.sh
-# or send several sizes and print the matching LB logs:
-./test_routing_with_logs.sh http://localhost:8000 compose
+# 4. Verify routing (generates a ~500 KB and a ~3.5 MB image)
+docker compose up --build -d && ./test_load_balancer.sh
+./test_routing_with_logs.sh http://localhost:8000 compose   # several sizes + matching LB logs
 ```
 
 #### Option B — Cloud deployment (Kubernetes / minikube)
@@ -336,29 +366,25 @@ docker compose up --build -d
 # 1. Start the cluster and the Metrics Server (required for HPA)
 minikube start --driver=docker
 minikube addons enable metrics-server
-# 2. Provide model weights as in Option A (models.zip in repo root, or .h5/.keras in ./models)
+# 2. Provide model weights as in Option A.
 # 3. Build all images into minikube's Docker and apply every manifest in k8s/
 ./k8s/deploy.sh                     # build + apply; later: ./k8s/deploy.sh apply (re-apply only)
-#    Creates, in namespace `glaucoma`:
-#      namespace, models-pv (PV+PVC), ai-worker-cpu (Deploy+Svc), ai-worker-gpu (Deploy+Svc),
-#      load-balancer (Deploy+Svc), frontend (Deploy+Svc NodePort 30501),
-#      ai-worker-hpa (HPA cpu 1→5@70%, gpu 1→3@75%), orchestrator (Deploy+Svc NodePort 30900 + RBAC)
-# 4. Get the URLs
-minikube service frontend     -n glaucoma --url        # the clinician dashboard
+#    Creates in namespace `glaucoma`: namespace, models-pv (PV+PVC), ai-worker-cpu/-gpu (Deploy+Svc),
+#    load-balancer (Deploy+Svc), frontend (Deploy+Svc NodePort 30501),
+#    ai-worker-hpa (cpu 1→5@70%, gpu 1→3@75%), orchestrator (Deploy+Svc NodePort 30900 + RBAC)
+# 4. Get the URLs and sanity-check
+minikube service frontend     -n glaucoma --url
 ORCH_URL=$(minikube service orchestrator -n glaucoma --url)
-# 5. Sanity checks
-kubectl -n glaucoma get pods
-kubectl -n glaucoma get hpa
-kubectl top nodes                                      # confirms Metrics Server is up
-# 6. Inspect / tune the live config through the orchestrator
+kubectl -n glaucoma get pods; kubectl -n glaucoma get hpa; kubectl top nodes
+# 5. Inspect / tune the live config through the orchestrator
 curl -s "$ORCH_URL/api/config" | jq
 curl -X PUT "$ORCH_URL/api/config" -H 'Content-Type: application/json' \
      -d '{"size_threshold_bytes": 1500000, "cpu_max_replicas": 8, "gpu_max_replicas": 4}'
 curl -s "$ORCH_URL/api/status" | jq '.cluster'
 # (if kubectl was unavailable on a PUT:)  curl -X POST "$ORCH_URL/api/config/apply"
-# 7. Run a single validated prediction (rejects oversize / wrong type / decompression bomb / bad model_name)
+# 6. A single validated prediction (rejects oversize / wrong type / decompression bomb / bad model_name)
 curl -X POST "$ORCH_URL/api/demo/predict" -F file=@models/sample.jpg -F model_name=glaucoma_v1.h5
-# 8. Run a synthetic batch load test (latency percentiles + per-pod spread)
+# 7. A synthetic batch load test (latency percentiles + per-pod spread)
 curl -X POST "$ORCH_URL/api/demo/loadtest" -H 'Content-Type: application/json' \
      -d '{"n": 100, "concurrency": 8, "model_name": "glaucoma_v1.h5"}'
 ```
@@ -366,8 +392,7 @@ curl -X POST "$ORCH_URL/api/demo/loadtest" -H 'Content-Type: application/json' \
 #### Option C — Orchestrator alone, no cluster (config-only)
 
 ```bash
-cd orchestrator
-go build -o orchestrator .
+cd orchestrator && go build -o orchestrator .
 ./orchestrator -listen :9000 -lb-url http://localhost:8000 -no-kube   # serves config + demo, no kubectl
 ```
 
@@ -379,11 +404,7 @@ cd load_balancer   && go test -v ./...                                          
 ./test_all.sh                                                                          # all + integration if k8s present
 ```
 
-#### Common troubleshooting (full list in [`README.md`](README.md))
-
-* minikube `/var` full → `docker system prune -a --volumes`, `minikube delete`, `minikube start --driver=docker --cpus=2 --memory=6000`.
-* Metrics Server `0/1` → wait 1–2 min; or `minikube addons disable metrics-server && minikube addons enable metrics-server`.
-* `pip install` DNS failure during image build → set Docker DNS (`/etc/docker/daemon.json` → `"dns":["8.8.8.8","1.1.1.1"]`, restart Docker) or build with `--network=host`, then `./k8s/deploy.sh apply`.
+Troubleshooting (full list in [`README.md`](README.md)): minikube `/var` full → `docker system prune -a --volumes`, then `minikube delete && minikube start --driver=docker --cpus=2 --memory=6000`; Metrics Server stuck at `0/1` → wait 1–2 min, or re-enable the addon; `pip install` DNS failure during the image build → set Docker DNS, or build with `--network=host`, then `./k8s/deploy.sh apply`.
 
 ---
 
@@ -391,31 +412,30 @@ cd load_balancer   && go test -v ./...                                          
 
 ### 6.1 Purpose
 
-Demonstrate, with a single scripted run, that the system fulfils the measurable objectives M1–M5 from §1.3: **(a)** the L7 load balancer routes light vs. heavy inference traffic to different worker pools, and **(b)** Kubernetes HPA elastically adds replicas to each pool under sustained load (and **(c)**, via the orchestrator, that the routing threshold is tunable at runtime). This is a cloud-infrastructure experiment, not a medical-accuracy test.
+Show, with a single scripted run, that the system fulfils M1–M5 ([§1.3](#13-measurable-objectives)):
+
+* **(a)** the L7 load balancer routes light vs. heavy inference traffic to different worker pools;
+* **(b)** Kubernetes HPA elastically adds replicas to each pool under sustained load, with traffic spread across the new pods;
+* **(c)** the routing threshold is tunable at runtime via the orchestrator.
+
+A cloud-infrastructure experiment, not a medical-accuracy test.
 
 ### 6.2 Setup
 
-1. Deploy to minikube as in §5.5 Option B (`./k8s/deploy.sh`; `minikube addons enable metrics-server`). The worker manifests ship with `LOAD_TEST_CPU_BURN_SECONDS=0.8` so inference produces measurable CPU pressure for the CPU-based HPA in minikube.
-2. Keep a port-forward to the load balancer open:
-   ```bash
-   kubectl -n glaucoma port-forward svc/load-balancer 8000:8080
-   ```
-3. In separate terminals, watch the cluster react:
-   ```bash
-   kubectl -n glaucoma get hpa  -w
-   kubectl -n glaucoma get pods -w
-   ```
+1. Deploy to minikube as in [§5.5 Option B](#55-step-by-step-configuring-and-running-the-whole-system). The worker manifests ship with `LOAD_TEST_CPU_BURN_SECONDS=0.8` so inference produces measurable CPU pressure for the CPU-based HPA on minikube.
+2. Keep a port-forward to the LB open: `kubectl -n glaucoma port-forward svc/load-balancer 8000:8080`.
+3. In separate terminals, watch the cluster react: `kubectl -n glaucoma get hpa -w` and `kubectl -n glaucoma get pods -w`.
 
 ### 6.3 Procedure
-
-Run the end-to-end proof — it sends both CPU-routed (small) and GPU-routed (large) traffic, monitors both HPAs, samples pod counts, and prints an automatic verdict:
 
 ```bash
 # args: <LB-url> <duration-seconds> <cpu-concurrency> <gpu-concurrency>
 ./test_scalability_e2e.sh http://localhost:8000 360 20 10
 ```
 
-(Optionally, single-pool runs: `./test_scalability.sh http://localhost:8000 300 12 cpu` and `… 300 8 gpu`. For the runtime-tuning objective M5: `curl -X PUT $ORCH_URL/api/config -d '{"size_threshold_bytes":1500000}'`, then `curl -X POST $ORCH_URL/api/demo/predict -F file=@... -F model_name=...` and check `orchestrator.routed_to_pool`, plus `curl -s $ORCH_URL/api/status | jq '.cluster.hpas'`.)
+It sends both CPU-routed (small) and GPU-routed (large) traffic, monitors both HPAs, samples pod counts, and prints an automatic verdict.
+
+Optional single-pool runs: `./test_scalability.sh http://localhost:8000 300 12 cpu` and `… 300 8 gpu`. For M5: `curl -X PUT $ORCH_URL/api/config -d '{"size_threshold_bytes":1500000}'`, then a `/api/demo/predict` checking `orchestrator.routed_to_pool`, plus `curl -s $ORCH_URL/api/status | jq '.cluster.hpas'`.
 
 ### 6.4 Expected result (success criterion)
 
@@ -431,25 +451,20 @@ PASS: both CPU and GPU worker pools demonstrated HPA scaling.
 
 Corroborating evidence:
 
-* Load-balancer log (`kubectl -n glaucoma logs -f deployment/load-balancer`):
-  ```text
-  [route] POST /predict/ (124987 bytes) -> CPU
-  [route] POST /predict/ (3500000 bytes) -> GPU
-  [route] GET /models/ -> CPU
-  ```
-* `kubectl -n glaucoma get hpa` shows `TARGETS` above the threshold and `REPLICAS` rising during the run, then settling back after the HPA stabilization window once load stops.
-* The orchestrator's `POST /api/demo/loadtest` response gives a quantitative view: `latency_ms` percentiles, `throughput_rps`, and a `worker_spread` map with one entry per worker pod — the clearest single signal that HPA-added replicas actually took traffic.
+* the load-balancer log: `[route] POST /predict/ (124987 bytes) -> CPU` / `(3500000 bytes) -> GPU` / `GET /models/ -> CPU`;
+* `kubectl -n glaucoma get hpa` showing `TARGETS` above the threshold and `REPLICAS` rising during the run, then settling after the stabilization window once load stops;
+* the orchestrator's `/api/demo/loadtest` response — `latency_ms` percentiles, `throughput_rps`, and a `worker_spread` map with one entry per worker pod (the clearest single signal that HPA-added replicas actually took traffic).
 
 ### 6.5 Interpretation
 
-A `PASS` on all five verdict lines means the project's goal is met: heterogeneous inference traffic is **routed by content (size)** to the appropriate worker class by our self-implemented L7 load balancer, each worker class **scales elastically** under load via Kubernetes HPA with traffic spread across the new pods, and the routing/scaling parameters are **re-tunable at runtime** through the orchestrator control plane — all within a containerized, Kubernetes-orchestrated microservice ecosystem.
+A `PASS` on all five verdict lines means the goal is met: heterogeneous inference traffic is **routed by content (size)** to the appropriate worker class by our self-implemented L7 load balancer; each worker class **scales elastically** under load via Kubernetes HPA, with traffic spread across the new pods; and the routing/scaling parameters are **re-tunable at runtime** through the orchestrator control plane — all within a containerized, Kubernetes-orchestrated microservice ecosystem.
 
 ---
 
-## Appendix — Related documents in this repository
+## Appendix — Related documents
 
 * [`README.md`](README.md) — quick start, full command reference, troubleshooting.
-* [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md) — detailed "custom Go LB vs. Kubernetes-only" trade-off analysis.
-* [`EDGE_CASES.md`](EDGE_CASES.md) — exhaustive catalogue of system behaviour under load, pod failures, routing/validation edge cases, and network anomalies.
+* [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md) — "custom Go LB vs. Kubernetes-only" trade-off analysis.
+* [`EDGE_CASES.md`](EDGE_CASES.md) — system behaviour under load, pod failures, routing/validation edge cases, network anomalies.
 * [`orchestrator/README.md`](orchestrator/README.md) — full orchestrator API reference, config bounds, edge cases, flags.
-* [`load_balancer/README.md`](load_balancer/README.md), [`cloud_ai_worker/README.md`](cloud_ai_worker/README.md), [`cloud_frontend_app/README.md`](cloud_frontend_app/README.md), [`k8s/README.md`](k8s/README.md) — per-component documentation.
+* [`load_balancer/README.md`](load_balancer/README.md), [`cloud_ai_worker/README.md`](cloud_ai_worker/README.md), [`cloud_frontend_app/README.md`](cloud_frontend_app/README.md), [`k8s/README.md`](k8s/README.md) — per-component docs.
