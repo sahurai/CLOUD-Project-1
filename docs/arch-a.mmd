@@ -1,0 +1,41 @@
+flowchart TB
+    OP["Operator / demo<br/>(curl, scripts)"]
+
+    subgraph NS["Kubernetes namespace · glaucoma"]
+        direction TB
+        FE["frontend — Streamlit<br/>dashboard"]
+        OR["orchestrator — Go REST API<br/>validates upload · /api/demo/*"]
+        LB{{"load-balancer — Go L7 reverse proxy<br/>Content-Length ≥ T → GPU pool, else → CPU pool"}}
+
+        subgraph CPUP["CPU pool · 1..5 replicas"]
+            direction TB
+            SC["Service ai-worker-cpu<br/>kube-proxy · L4 round-robin"]
+            WC["ai-worker-cpu pods<br/>FastAPI + TF/Keras · Standard CPU"]
+            SC --> WC
+        end
+
+        subgraph GPUP["GPU-profile pool · 1..3 replicas"]
+            direction TB
+            SG["Service ai-worker-gpu<br/>kube-proxy · L4 round-robin"]
+            WG["ai-worker-gpu pods<br/>FastAPI + TF/Keras · High-Performance GPU"]
+            SG --> WG
+        end
+
+        PV[("models-pv · PVC<br/>.h5 / .keras weights, read-only")]
+    end
+
+    C -- "NodePort 30501" --> FE
+    OP -- "NodePort 30900" --> OR
+    FE -- "POST /predict/" --> OR
+    OR -- "POST /predict/" --> LB
+    LB -- "small &lt; T" --> SC
+    LB -- "large ≥ T" --> SG
+    WC -- "load model (first use)" --> PV
+    WG -- "load model (first use)" --> PV
+
+    classDef self fill:#ffd966,stroke:#7f6000,stroke-width:2px,color:#000;
+    classDef ext fill:#e6f3ff,stroke:#0b5394,color:#000;
+    classDef pv fill:#d9ead3,stroke:#274e13,color:#000;
+    class LB self;
+    class C,OP ext;
+    class PV pv;

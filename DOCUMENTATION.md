@@ -14,7 +14,8 @@
 5. [Detailed Technical Implementation Description](#5-detailed-technical-implementation-description)
 6. [Experiment — Verifying the Stated Goal](#6-experiment--verifying-the-stated-goal)
 7. [Conclusion and Future Work](#7-conclusion-and-future-work)
-8. [Appendix — Related documents](#appendix--related-documents)
+8. [Work Distribution](#8-work-distribution)
+9. [Appendix — Related documents](#appendix--related-documents)
 
 ---
 
@@ -115,11 +116,11 @@ The full trade-off analysis is in [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_
 
 ### 4.1 Base architecture diagram
 
-**(a) Request data path and topology.** The highlighted node is the self-implemented cloud-functionality component ([§4.3.1](#431-the-l7-routing-algorithm-go-reverse-proxy), [§5.3](#53-the-self-implemented-cloud-functionality-component--the-go-l7-load-balancer)).
+**(a) Request data path and topology.** The highlighted node is the self-implemented cloud-functionality component ([§4.3.1](#431-the-l7-routing-algorithm-go-reverse-proxy), [§5.3](#53-the-self-implemented-cloud-functionality-component--the-go-l7-load-balancer)). Mermaid source: [`docs/arch-a.mmd`](docs/arch-a.mmd).
 
 ![Request data path and topology — clients → frontend → orchestrator → load-balancer → CPU/GPU Service → worker pods → models-pv](docs/arch-a.png)
 
-**(b) Control & scaling plane** (runs alongside the data path above).
+**(b) Control & scaling plane** (runs alongside the data path above). Mermaid source: [`docs/arch-b.mmd`](docs/arch-b.mmd).
 
 ![Control and scaling plane — Metrics Server → HPAs → scale worker pods; orchestrator patches the HPAs and the load-balancer threshold via kubectl](docs/arch-b.png)
 
@@ -141,6 +142,10 @@ The full trade-off analysis is in [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_
 
 #### 4.2.2 Deployment / physical view
 
+The Kubernetes objects and how they wire up are summarized below; the diagram shows the same picture with the data path (solid arrows) and the control / scaling plane (dashed arrows) drawn on top of each other. Mermaid source: [`docs/deployment.mmd`](docs/deployment.mmd).
+
+![Deployment topology — external clients enter via NodePort 30501 (frontend) or 30900 (orchestrator); the orchestrator validates and forwards to the load-balancer, which picks the CPU or GPU pool by size; kube-proxy picks a pod inside the pool; the worker pods mount models-pv read-only; HPAs scale each pool from Metrics Server CPU%, and the orchestrator patches HPAs and the LB env at runtime](docs/deployment.png)
+
 | Object | What it is | Why it is there |
 |---|---|---|
 | Namespace `glaucoma` | One Kubernetes namespace holding everything | On minikube it is a single node, but the design is multi-node-ready — in a real cluster the CPU and GPU Deployments would carry different `nodeSelector`/taints. |
@@ -157,6 +162,10 @@ The full trade-off analysis is in [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_
 4. **Pick a pod.** The pool's Kubernetes Service (kube-proxy) forwards to one Ready worker pod (round-robin / random among the replicas).
 5. **Infer.** The worker reads the bytes → resizes to `224×224`, normalizes to `[0,1]`, adds a batch dimension → `get_model(model_name)` (cache hit, or load from the PV on first use) → `model.predict(x)[0][0]` → optional synthetic CPU burn for the HPA demo → returns `{status, probability, node_type, worker_id, execution_time}`.
 6. **Return.** The orchestrator wraps the response as `{orchestrator:{validated:{…}, routed_to_pool:"cpu|gpu"}, upstream:{…}}`; the UI shows the probability, the clinical band and the telemetry.
+
+The same lifecycle as a UML sequence diagram — the `alt` block makes the L7 routing decision (small image → CPU pool, large image → GPU pool) explicit. Mermaid source: [`docs/sequence.mmd`](docs/sequence.mmd).
+
+![Predict request sequence — clinician → frontend → orchestrator validation chain (size cap, content-type, magic-byte, decompression-bomb guard, model_name sanitization) → load balancer routes by Content-Length → CPU or GPU Service → worker pod loads model from models-pv, preprocesses, runs model.predict, returns telemetry → wrapped response back to the clinician](docs/sequence.png)
 
 #### 4.2.4 Scaling / control view
 
@@ -513,6 +522,39 @@ Natural next steps, were this taken beyond a course submission:
 * **Admission control** — return `429 Too Many Requests` and/or queue under overload instead of letting latency grow unbounded.
 * **Observability stack** — persistent metrics/logging (Prometheus + Grafana, a log aggregator) instead of `kubectl logs`.
 * **Multi-tenancy and secrets** — network policies, per-tenant namespaces, and a secrets manager for a real clinical deployment.
+
+---
+
+## 8. Work Distribution
+
+The project was split along the three architectural layers introduced in [§4](#4-concept--architecture-views-and-technical-analysis): the **inference layer** (workers, frontend, model integration), the **infrastructure layer** (the Go load balancer, all Kubernetes manifests, the orchestrator control plane), and the **verification layer** (the test framework, the HPA / scalability experiments, the edge-case catalogue). One member owned each layer end-to-end, with cross-review on the boundaries.
+
+| Member | Owned scope | Concrete deliverables |
+|---|---|---|
+| **Ilia Sukhina** ([@sahurai](https://github.com/sahurai)) | **Inference layer + project documentation.** AI worker code, clinician-facing frontend, the local Docker Compose stack, all top-level written deliverables. | [`cloud_ai_worker/`](cloud_ai_worker/) — FastAPI service, lazy model cache, preprocessing & inference pipeline, telemetry ([§4.3.5](#435-the-inference-algorithm--cnn-on-the-worker-fastapi--tensorflowkeras)) · [`cloud_frontend_app/`](cloud_frontend_app/) — Streamlit dashboard, model dropdown, clinical-band rendering · baseline [`docker-compose.yml`](docker-compose.yml) · [`README.md`](README.md), [`LOAD_BALANCER_COMPARISON.md`](LOAD_BALANCER_COMPARISON.md), [`DOCUMENTATION.md`](DOCUMENTATION.md), architecture diagrams ([`docs/arch-a.png`](docs/arch-a.png), [`docs/arch-b.png`](docs/arch-b.png)), sequence + deployment diagrams ([`docs/sequence.mmd`](docs/sequence.mmd), [`docs/deployment.mmd`](docs/deployment.mmd)). |
+| **Adam Partl** | **Infrastructure layer.** The self-implemented cloud-functionality component (the Go L7 load balancer), all Kubernetes manifests, and the Go orchestrator control plane. | [`load_balancer/main.go`](load_balancer/main.go) + [`load_balancer/Dockerfile`](load_balancer/Dockerfile) — the ~80-line L7 reverse proxy with the `Content-Length` routing primitive ([§4.3.1](#431-the-l7-routing-algorithm-go-reverse-proxy), [§5.3](#53-the-self-implemented-cloud-functionality-component--the-go-l7-load-balancer)) · all manifests under [`k8s/`](k8s/) — namespace, [`models-pv.yaml`](k8s/models-pv.yaml), [`ai-worker-cpu.yaml`](k8s/ai-worker-cpu.yaml), [`ai-worker-gpu.yaml`](k8s/ai-worker-gpu.yaml), [`load-balancer.yaml`](k8s/load-balancer.yaml), [`frontend.yaml`](k8s/frontend.yaml), [`orchestrator.yaml`](k8s/orchestrator.yaml) (+ ServiceAccount/RBAC), [`deploy.sh`](k8s/deploy.sh) · the full [`orchestrator/`](orchestrator/) Go service — REST API, validated/persisted config, `kubectl`-based reconciliation, upload safeguards, synthetic load tester ([§4.3.4](#434-the-control-plane-algorithm--orchestrator-config-reconciliation)) · per-component READMEs ([`load_balancer/README.md`](load_balancer/README.md), [`k8s/README.md`](k8s/README.md), [`orchestrator/README.md`](orchestrator/README.md)). |
+| **Yevhenii Severin** | **Verification layer.** Test framework across all components, the Kubernetes autoscaling configuration, the E2E scalability experiment, and the edge-case catalogue. | Unit tests — [`cloud_ai_worker/tests/test_main.py`](cloud_ai_worker/tests/test_main.py) + [`cloud_ai_worker/pytest.ini`](cloud_ai_worker/pytest.ini), [`load_balancer/main_test.go`](load_balancer/main_test.go) · integration / orchestration — [`test_all.sh`](test_all.sh), [`setup_k8s.sh`](setup_k8s.sh), [`prepare_models.sh`](prepare_models.sh) · HPA configuration [`k8s/ai-worker-hpa.yaml`](k8s/ai-worker-hpa.yaml) and the related manifest updates that made the workers HPA-friendly (resource requests/limits, `LOAD_TEST_CPU_BURN_SECONDS`) · the scalability experiment used in [§6](#6-experiment--verifying-the-stated-goal) — [`test_scalability.sh`](test_scalability.sh), [`test_scalability_e2e.sh`](test_scalability_e2e.sh), [`test_routing_with_logs.sh`](test_routing_with_logs.sh) · the [`EDGE_CASES.md`](EDGE_CASES.md) failure catalogue (committed by Ilia on Yevhenii's behalf — see commit `fb68219`). |
+
+### Effort breakdown by area
+
+The matrix below maps the work areas onto the team. **P** = primary owner (designed and implemented), **C** = contributor (reviews, follow-up patches, integration glue), blank = no involvement.
+
+| Area | Ilia | Adam | Yevhenii |
+|---|:---:|:---:|:---:|
+| AI worker (FastAPI + TF/Keras inference) | **P** |  | C |
+| Streamlit frontend | **P** |  |  |
+| Docker Compose (local stack) | **P** | C |  |
+| Custom Go Layer-7 load balancer |  | **P** | C |
+| Kubernetes manifests (Deploy/Svc/PV/RBAC) |  | **P** | C |
+| HorizontalPodAutoscaler (HPA) setup |  | C | **P** |
+| Orchestrator (Go REST control plane) |  | **P** |  |
+| Unit + integration test framework |  |  | **P** |
+| Scalability experiment ([§6](#6-experiment--verifying-the-stated-goal)) |  |  | **P** |
+| Architecture, sequence, deployment diagrams | **P** |  |  |
+| Project documentation (this file, README, LB comparison) | **P** |  |  |
+| Edge-case catalogue ([`EDGE_CASES.md`](EDGE_CASES.md)) | C |  | **P** |
+
+Authorship can be verified against the git history (`git log --pretty=format:"%h %an %s"`); the responsibility split above matches the commit attributions, with cross-contributions reflected as **C**.
 
 ---
 

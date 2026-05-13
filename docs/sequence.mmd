@@ -1,0 +1,50 @@
+sequenceDiagram
+    autonumber
+    actor C as Clinician
+    participant FE as Frontend<br/>(Streamlit)
+    participant O as Orchestrator<br/>(Go REST API)
+    participant LB as Load Balancer<br/>(Go L7 reverse proxy)
+    participant SC as Service<br/>ai-worker-cpu
+    participant SG as Service<br/>ai-worker-gpu
+    participant WC as Worker pod<br/>(CPU)
+    participant WG as Worker pod<br/>(GPU)
+    participant PV as models-pv<br/>(PersistentVolume)
+
+    C->>FE: Upload fundus image, pick model
+    FE->>O: POST /api/demo/predict<br/>(multipart: file, model_name)
+
+    rect rgb(245,245,220)
+    note over O: Validation chain<br/>(before forwarding)
+    O->>O: 1. size cap (limit+1 read) -> 413 if too big
+    O->>O: 2. declared Content-Type in allowlist -> 415
+    O->>O: 3. magic-byte sniff (DetectContentType) -> 415
+    O->>O: 4. header-only DecodeConfig<br/>(decompression-bomb guard) -> 413
+    O->>O: 5. sanitize model_name (regex, no '..') -> 400
+    end
+
+    O->>LB: POST /predict/ (forwarded)
+
+    alt Content-Length < SIZE_THRESHOLD (small image)
+        LB->>LB: log [route] ... -> CPU
+        LB->>SC: ReverseProxy to CPU_BACKEND
+        SC->>WC: kube-proxy picks a Ready pod (L4)
+        WC->>PV: get_model(name) [cache miss only]
+        PV-->>WC: model bytes (.h5 / .keras)
+        WC->>WC: preprocess 224x224x3 + normalize
+        WC->>WC: model.predict(x)
+        WC-->>SC: {status, probability, node_type=Standard CPU,<br/>worker_id, execution_time}
+        SC-->>LB: response
+    else Content-Length >= SIZE_THRESHOLD (large image)
+        LB->>LB: log [route] ... -> GPU
+        LB->>SG: ReverseProxy to GPU_BACKEND
+        SG->>WG: kube-proxy picks a Ready pod (L4)
+        WG->>PV: get_model(name) [cache miss only]
+        PV-->>WG: model bytes
+        WG->>WG: preprocess + model.predict(x)
+        WG-->>SG: {status, probability, node_type=High-Performance GPU,<br/>worker_id, execution_time}
+        SG-->>LB: response
+    end
+
+    LB-->>O: upstream JSON
+    O-->>FE: {orchestrator:{validated, routed_to_pool}, upstream:{...}}
+    FE-->>C: probability % + clinical band<br/>(Low / Suspicious / High Risk) + telemetry

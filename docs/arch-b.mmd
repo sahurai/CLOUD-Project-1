@@ -1,0 +1,22 @@
+flowchart LR
+    MS["Metrics Server<br/>(pod CPU%)"]
+    OR["orchestrator — control plane<br/>PUT /api/config → reconcile"]
+
+    HPC["HPA ai-worker-cpu<br/>1 → 5 @ 70% CPU"]
+    HPG["HPA ai-worker-gpu<br/>1 → 3 @ 75% CPU"]
+    LB["load-balancer<br/>(routing threshold T)"]
+
+    PC["ai-worker-cpu pods"]
+    PG["ai-worker-gpu pods"]
+
+    MS -- "scrape" --> HPC
+    MS -- "scrape" --> HPG
+    HPC -- "scale replicas" --> PC
+    HPG -- "scale replicas" --> PG
+
+    OR -- "kubectl patch hpa<br/>(min/max/target)" --> HPC
+    OR -- "kubectl patch hpa<br/>(min/max/target)" --> HPG
+    OR -- "kubectl set env<br/>SIZE_THRESHOLD" --> LB
+
+    classDef self fill:#ffd966,stroke:#7f6000,stroke-width:2px,color:#000;
+    class OR self;

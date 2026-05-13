@@ -1,0 +1,96 @@
+flowchart TB
+    %% External actors
+    subgraph EXT["External"]
+        BR["Clinician browser<br/>(HTTP)"]
+        ADMIN["Cluster admin<br/>(kubectl / curl)"]
+    end
+
+    %% Kubernetes node
+    subgraph NODE["minikube node (Docker driver) — multi-node ready via nodeSelector/taints"]
+
+        subgraph MS["kube-system"]
+            METRICS["Metrics Server<br/>(addon)"]
+        end
+
+        subgraph NS["Namespace: glaucoma"]
+
+            subgraph FEPOD["Deployment: frontend (1 pod)"]
+                FE["Streamlit container<br/>cloud_frontend_app<br/>BACKEND_URL env"]
+            end
+            FE_SVC["Service: frontend<br/>NodePort 30501 -> 8501"]
+
+            subgraph ORPOD["Deployment: orchestrator (1 pod, Recreate)"]
+                OR["Go REST API<br/>orchestrator/<br/>config.json on RWO PVC"]
+                SA["ServiceAccount<br/>+ RBAC (patch HPA, set env)"]
+            end
+            OR_SVC["Service: orchestrator<br/>NodePort 30900 -> 9000"]
+            OR_PVC["PVC: orchestrator-config<br/>(RWO)"]
+
+            subgraph LBPOD["Deployment: load-balancer (1 pod)"]
+                LB["Go L7 proxy ~10 MB Alpine<br/>CPU_BACKEND / GPU_BACKEND<br/>SIZE_THRESHOLD / PORT"]
+            end
+            LB_SVC["Service: load-balancer<br/>ClusterIP :8080"]
+
+            subgraph CPUPOOL["Deployment: ai-worker-cpu (1..N pods)"]
+                WC1["FastAPI + TF/Keras<br/>NODE_TYPE=Standard CPU"]
+                WC2["FastAPI + TF/Keras<br/>NODE_TYPE=Standard CPU"]
+            end
+            CPU_SVC["Service: ai-worker-cpu<br/>ClusterIP :8001"]
+            CPU_HPA["HPA: ai-worker-cpu<br/>min=1 max=5 @ ~70% CPU"]
+
+            subgraph GPUPOOL["Deployment: ai-worker-gpu (1..M pods)"]
+                WG1["FastAPI + TF/Keras<br/>NODE_TYPE=High-Performance GPU"]
+                WG2["FastAPI + TF/Keras<br/>NODE_TYPE=High-Performance GPU"]
+            end
+            GPU_SVC["Service: ai-worker-gpu<br/>ClusterIP :8001"]
+            GPU_HPA["HPA: ai-worker-gpu<br/>min=1 max=3 @ ~75% CPU"]
+
+            PV[("PersistentVolume<br/>models-pv (RO)<br/>.h5 / .keras files")]
+
+        end
+    end
+
+    %% External traffic
+    BR -- "NodePort 30501" --> FE_SVC --> FE
+    BR -- "NodePort 30900<br/>/api/demo/predict, /api/config" --> OR_SVC --> OR
+    ADMIN -- "kubectl / curl" --> OR_SVC
+
+    %% Frontend -> orchestrator (or LB)
+    FE -- "POST /predict/, GET /models/" --> OR
+
+    %% Orchestrator -> LB
+    OR -- "validate -> forward" --> LB_SVC --> LB
+
+    %% LB -> pools (L7 decision)
+    LB -- "Content-Length &lt; threshold" --> CPU_SVC
+    LB -- "Content-Length &gt;= threshold" --> GPU_SVC
+
+    %% Services (L4) -> pods (kube-proxy round-robin)
+    CPU_SVC --> WC1
+    CPU_SVC --> WC2
+    GPU_SVC --> WG1
+    GPU_SVC --> WG2
+
+    %% PV mount
+    WC1 -. read-only mount .-> PV
+    WC2 -. read-only mount .-> PV
+    WG1 -. read-only mount .-> PV
+    WG2 -. read-only mount .-> PV
+
+    %% Control / scaling plane
+    METRICS -. CPU% .-> CPU_HPA
+    METRICS -. CPU% .-> GPU_HPA
+    CPU_HPA -. scale .-> CPUPOOL
+    GPU_HPA -. scale .-> GPUPOOL
+    OR -. "kubectl patch hpa" .-> CPU_HPA
+    OR -. "kubectl patch hpa" .-> GPU_HPA
+    OR -. "kubectl set env SIZE_THRESHOLD" .-> LBPOD
+    OR -- mount --> OR_PVC
+    OR --- SA
+
+    classDef self fill:#ffd966,stroke:#7f6000,stroke-width:2px,color:#000;
+    classDef ext fill:#e6f3ff,stroke:#0b5394,color:#000;
+    classDef pv fill:#d9ead3,stroke:#274e13,color:#000;
+    class LB,LBPOD self;
+    class BR,ADMIN ext;
+    class PV pv;
