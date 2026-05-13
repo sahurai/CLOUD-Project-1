@@ -498,6 +498,18 @@ ai-worker-gpu   Deployment/ai-worker-gpu   cpu: 186%/75%   1         3         1
 
 After traffic stopped, both pools cooled down (`cpu: 0%`) and scaled back toward their minimums once the HPA stabilization window elapsed.
 
+#### Visualizations
+
+To make the scaling behaviour easier to read, [`test_scaling_graphs.sh`](test_scaling_graphs.sh) re-runs the same experiment with a background poller that samples both HPAs every 5 s (replica counts and HPA-reported CPU %) and renders two PNGs from the CSV via [`scripts/plot_scaling.py`](scripts/plot_scaling.py).
+
+![HPA pod replicas over time — solid lines are `currentReplicas`, dashed lines are `desiredReplicas` per pool. The CPU pool jumps 1 → 2 around t≈76 s, then the GPU pool jumps 1 → 2 at t≈230 s and 2 → 3 at t≈285 s as the second test phase saturates it.](docs/scaling_replicas.png)
+
+![HPA CPU utilization vs target — observed `cpu` against each HPA's target (dotted: 70 % CPU pool, 75 % GPU pool). The CPU pool peaks at 231 % during its phase (≈3.3× target), then drops to ~0 % once load shifts to the GPU pool, which itself reaches 187 % (≈2.5× target). Both excesses are exactly what triggers the replica increases in the graph above.](docs/scaling_cpu.png)
+
+The graphs corroborate the verdict table line-for-line: `currentReplicas > 1` on both pools (M2, M3) and HPA-reported CPU well above the target threshold during each phase — which is precisely what the HPA ratio formula ([§4.3.3](#433-the-autoscaling-control-algorithm--horizontalpodautoscaler)) consumes to compute the new replica count.
+
+Raw samples that produced the plots live at [`docs/data/scaling_metrics.csv`](docs/data/scaling_metrics.csv); regenerating the PNGs is `./test_scaling_graphs.sh http://localhost:8000 360 20 10 60`.
+
 Corroborating evidence:
 
 * the load-balancer log: `[route] POST /predict/ (124987 bytes) -> CPU` / `(3500000 bytes) -> GPU` / `GET /models/ -> CPU`;
